@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Dominoes — Multiplayer</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div id="toasts"></div>
+
+  <!-- HOME -->
+  <section id="screen-home" class="screen active">
+    <div class="card home-card">
+      <h1>🁣 Dominoes</h1>
+      <p class="tagline">Play dominoes online with friends</p>
+      <input id="name-input" type="text" maxlength="20" placeholder="Your name" autocomplete="off" />
+      <button id="btn-create" class="btn primary">Create Room</button>
+      <div class="divider"><span>or join a room</span></div>
+      <div class="join-row">
+        <input id="code-input" type="text" maxlength="5" placeholder="CODE" autocomplete="off" />
+        <button id="btn-join" class="btn">Join</button>
+      </div>
+      <p id="home-error" class="error"></p>
+    </div>
+  </section>
+
+  <!-- LOBBY -->
+  <section id="screen-lobby" class="screen">
+    <div class="card lobby-card">
+      <h2>Room Code</h2>
+      <div class="code-box">
+        <span id="lobby-code">—</span>
+        <button id="btn-copy" class="btn small" title="Copy code">Copy</button>
+      </div>
+      <p class="hint">Share this code — friends enter it on the home screen to join. 2–4 players.</p>
+      <ul id="lobby-players" class="player-list"></ul>
+      <button id="btn-start" class="btn primary">Start Game</button>
+      <p id="lobby-hint" class="hint"></p>
+      <button id="btn-leave-lobby" class="btn ghost">Leave room</button>
+    </div>
+  </section>
+
+  <!-- GAME -->
+  <section id="screen-game" class="screen">
+    <header id="game-header">
+      <span class="room-tag">Room <b id="game-code">—</b></span>
+      <div id="opponents"></div>
+      <span class="boneyard-tag">Boneyard: <b id="boneyard-count">0</b></span>
+    </header>
+
+    <div id="board-wrap">
+      <div id="board"></div>
+      <div id="board-empty" class="hint">Waiting for the first tile…</div>
+    </div>
+
+    <div id="turn-banner"></div>
+
+    <footer id="my-area">
+      <div id="my-info"></div>
+      <div id="hand"></div>
+      <div id="actions">
+        <button id="btn-draw" class="btn">Draw</button>
+        <button id="btn-pass" class="btn">Pass</button>
+        <button id="btn-leave-game" class="btn ghost">Leave</button>
+      </div>
+    </footer>
+
+    <!-- side chooser popover -->
+    <div id="side-chooser" class="hidden">
+      <button data-side="left" class="btn">◀ Left end</button>
+      <button data-side="right" class="btn">Right end ▶</button>
+    </div>
+
+    <!-- round over overlay -->
+    <div id="overlay" class="hidden">
+      <div class="card overlay-card">
+        <h2 id="overlay-title"></h2>
+        <p id="overlay-sub"></p>
+        <div id="overlay-scores"></div>
+        <button id="btn-next-round" class="btn primary">Next Round</button>
+        <button id="btn-back-home" class="btn ghost">Back to Home</button>
+      </div>
+    </div>
+  </section>
+
+  <script src="/socket.io/socket.io.js"></script>
+  <script src="client.js"></script>
+</body>
+</html>
