@@ -6,6 +6,8 @@ const screens = { home: $('screen-home'), lobby: $('screen-lobby'), game: $('scr
 
 let state = null; // last server state
 let selectedTileIndex = null;
+let prevBoardLen = 0; // for detecting a newly placed tile to animate
+let pendingHandRect = null; // where my clicked tile was, so the animation starts there
 
 function show(name) {
   Object.values(screens).forEach((s) => s.classList.remove('active'));
@@ -25,6 +27,8 @@ const PIP_CELLS = {
   0: [], 1: [4], 2: [0, 8], 3: [0, 4, 8],
   4: [0, 2, 6, 8], 5: [0, 2, 4, 6, 8], 6: [0, 2, 3, 5, 6, 8],
 };
+// one color per pip value, playdrift-style
+const PIP_COLORS = ['#8a93a3', '#3b7fc4', '#8a6d4a', '#d94f4f', '#4caf7d', '#2ab5b0', '#e8923a'];
 
 function half(value) {
   const h = document.createElement('div');
@@ -33,7 +37,10 @@ function half(value) {
   pips.className = 'pips';
   for (let i = 0; i < 9; i++) {
     const cell = document.createElement('div');
-    if (PIP_CELLS[value].includes(i)) cell.className = 'pip';
+    if (PIP_CELLS[value].includes(i)) {
+      cell.className = 'pip';
+      cell.style.background = PIP_COLORS[value];
+    }
     cell.style.gridArea = `${Math.floor(i / 3) + 1} / ${(i % 3) + 1}`;
     pips.appendChild(cell);
   }
@@ -47,6 +54,42 @@ function dominoEl(tile, orientation) {
   d.appendChild(half(tile[0]));
   d.appendChild(half(tile[1]));
   return d;
+}
+
+/* ---------- Avatars ---------- */
+const SEAT_COLORS = ['#e05a7e', '#3bbcd9', '#f0c24b', '#c0703f'];
+const INVADER = [
+  '00100000100',
+  '00010001000',
+  '00111111100',
+  '01101110110',
+  '11111111111',
+  '10111111101',
+  '10100000101',
+  '00011011000',
+];
+
+function avatarEl(playerIndex) {
+  const div = document.createElement('div');
+  div.className = 'avatar';
+  div.style.background = SEAT_COLORS[playerIndex % SEAT_COLORS.length];
+  const ns = 'http://www.w3.org/2000/svg';
+  const svg = document.createElementNS(ns, 'svg');
+  svg.setAttribute('viewBox', '0 0 11 8');
+  for (let y = 0; y < INVADER.length; y++) {
+    for (let x = 0; x < INVADER[y].length; x++) {
+      if (INVADER[y][x] === '1') {
+        const r = document.createElementNS(ns, 'rect');
+        r.setAttribute('x', x);
+        r.setAttribute('y', y);
+        r.setAttribute('width', 1);
+        r.setAttribute('height', 1);
+        svg.appendChild(r);
+      }
+    }
+  }
+  div.appendChild(svg);
+  return div;
 }
 
 /* ---------- Home ---------- */
@@ -94,6 +137,7 @@ $('btn-leave-game').onclick = () => {
 function leaveRoom() {
   socket.emit('leaveRoom');
   state = null;
+  prevBoardLen = 0;
   show('home');
 }
 
@@ -122,7 +166,12 @@ function hideSideChooser() {
 }
 
 function playTile(tileIndex, side) {
-  socket.emit('playTile', { tileIndex, side }, (res) => res?.error && toast(res.error));
+  socket.emit('playTile', { tileIndex, side }, (res) => {
+    if (res?.error) {
+      pendingHandRect = null;
+      toast(res.error);
+    }
+  });
 }
 
 function playableSides(tile) {
@@ -144,7 +193,7 @@ socket.on('state', (s) => {
 
 socket.on('disconnect', () => toast('Connection lost — reconnecting…'));
 socket.on('connect', () => {
-  // After a socket reconnect our old seat is orphaned; user can rejoin via home screen.
+  // After a socket reconnect our old seat is orphaned; try to reclaim it.
   if (state && state.code) {
     const name = $('name-input').value;
     const code = state.code;
@@ -192,6 +241,56 @@ function renderLobby() {
     : 'Waiting for the host to start the game…';
 }
 
+/* Opponents fill seats clockwise around the table, relative to me. */
+function seatLayout(opponentCount) {
+  if (opponentCount === 1) return ['seat-top'];
+  if (opponentCount === 2) return ['seat-left', 'seat-right'];
+  return ['seat-left', 'seat-top', 'seat-right'];
+}
+
+function buildSeat(seatEl, player, playerIndex, g) {
+  seatEl.innerHTML = '';
+  seatEl.classList.add('occupied');
+  seatEl.classList.toggle('turn', g.turn === playerIndex && !g.over);
+  seatEl.classList.toggle('disconnected', !player.connected);
+  seatEl.dataset.playerIndex = playerIndex;
+
+  const who = document.createElement('div');
+  who.style.display = 'flex';
+  who.style.flexDirection = 'column';
+  who.style.alignItems = 'center';
+  who.style.gap = '4px';
+  who.appendChild(avatarEl(playerIndex));
+  const nm = document.createElement('div');
+  nm.className = 'seat-name';
+  nm.textContent = player.name + (player.connected ? '' : ' ⚠');
+  who.appendChild(nm);
+  seatEl.appendChild(who);
+
+  const stack = document.createElement('div');
+  stack.className = 'stack';
+  for (let i = 0; i < Math.min(player.tileCount, 7); i++) {
+    const t = document.createElement('div');
+    t.className = 'back-tile';
+    stack.appendChild(t);
+  }
+  seatEl.appendChild(stack);
+
+  const pts = document.createElement('div');
+  pts.className = 'seat-points';
+  pts.innerHTML = '<b></b><span>points</span>';
+  pts.querySelector('b').textContent = player.score;
+  seatEl.appendChild(pts);
+
+  if (!player.connected && state.players[state.youIndex]?.isHost) {
+    const kick = document.createElement('button');
+    kick.className = 'kick';
+    kick.textContent = 'Remove';
+    kick.onclick = () => socket.emit('kickDisconnected', { playerIndex }, (r) => r?.error && toast(r.error));
+    seatEl.appendChild(kick);
+  }
+}
+
 function renderGame() {
   show('game');
   const g = state.game;
@@ -201,66 +300,72 @@ function renderGame() {
   $('game-code').textContent = state.code;
   $('boneyard-count').textContent = g.boneyardCount;
 
-  // opponents
-  const opps = $('opponents');
-  opps.innerHTML = '';
-  state.players.forEach((p, i) => {
-    if (i === state.youIndex) return;
-    const el = document.createElement('div');
-    el.className = 'opp' + (g.turn === i && !g.over ? ' turn' : '') + (p.connected ? '' : ' disconnected');
-    el.innerHTML = `<div class="opp-name"></div><div class="opp-meta"></div>`;
-    el.querySelector('.opp-name').textContent = p.name + (p.connected ? '' : ' (offline)');
-    el.querySelector('.opp-meta').textContent = `${p.tileCount} tiles · ${p.score} pts`;
-    if (!p.connected && state.players[state.youIndex]?.isHost) {
-      const kick = document.createElement('button');
-      kick.className = 'btn small kick';
-      kick.textContent = 'Remove';
-      kick.onclick = () => socket.emit('kickDisconnected', { playerIndex: i }, (r) => r?.error && toast(r.error));
-      el.appendChild(kick);
-    }
-    opps.appendChild(el);
+  // --- seats around the table ---
+  const seatEls = { 'seat-top': $('seat-top'), 'seat-left': $('seat-left'), 'seat-right': $('seat-right') };
+  Object.values(seatEls).forEach((el) => {
+    el.classList.remove('occupied', 'turn', 'disconnected');
+    el.innerHTML = '';
+  });
+  const opponents = [];
+  for (let i = 1; i < state.players.length; i++) {
+    opponents.push((state.youIndex + i) % state.players.length);
+  }
+  const layout = seatLayout(opponents.length);
+  const seatOfPlayer = {}; // playerIndex -> seat element (for animations)
+  opponents.forEach((pIdx, k) => {
+    const el = seatEls[layout[k]];
+    if (!el) return;
+    buildSeat(el, state.players[pIdx], pIdx, g);
+    seatOfPlayer[pIdx] = el;
   });
 
-  // board
+  // --- board ---
   const board = $('board');
   board.innerHTML = '';
-  $('board-empty').style.display = g.board.length ? 'none' : '';
-  g.board.forEach((tile, idx) => {
-    const isDouble = tile[0] === tile[1];
-    const el = dominoEl(tile, isDouble ? 'v' : 'h');
-    if (g.lastMove && g.lastMove.tile) {
-      const lm = g.lastMove;
-      const isNewest =
-        (lm.side === 'left' && idx === 0) ||
-        ((lm.side === 'right' || g.board.length === 1) && idx === g.board.length - 1);
-      if (isNewest) el.classList.add('just-played');
-    }
-    board.appendChild(el);
+  g.board.forEach((tile) => {
+    board.appendChild(dominoEl(tile, tile[0] === tile[1] ? 'v' : 'h'));
   });
 
-  // turn banner
-  const banner = $('turn-banner');
-  if (g.over) {
-    banner.textContent = '';
-    banner.className = '';
-  } else if (myTurn) {
-    banner.textContent = '▶ Your turn!';
-    banner.className = 'mine';
-  } else {
-    banner.textContent = `${state.players[g.turn]?.name}'s turn…`;
-    banner.className = '';
+  // animate the newest tile flying in from whoever played it
+  if (g.board.length > prevBoardLen && g.lastMove?.tile && board.children.length > 0) {
+    const newest =
+      g.lastMove.side === 'left' && g.board.length > 1
+        ? board.children[0]
+        : board.children[board.children.length - 1];
+    let fromRect = null;
+    if (g.lastMove.playerIndex === state.youIndex && pendingHandRect) {
+      fromRect = pendingHandRect;
+    } else {
+      const seatEl = seatOfPlayer[g.lastMove.playerIndex];
+      if (seatEl) fromRect = seatEl.getBoundingClientRect();
+    }
+    if (fromRect) flyIn(newest, fromRect);
   }
+  prevBoardLen = g.board.length;
+  pendingHandRect = null;
 
-  // my info + hand
-  $('my-info').innerHTML = '';
-  const info = document.createElement('span');
-  info.append(`${me.name} — `);
-  const b = document.createElement('b');
-  b.textContent = `${me.score} pts`;
-  info.appendChild(b);
-  info.append(` (first to ${g.targetScore})`);
-  $('my-info').appendChild(info);
+  // --- my seat ---
+  const mySeat = $('my-seat');
+  mySeat.classList.toggle('turn', myTurn);
+  const myAvatar = $('my-avatar');
+  myAvatar.innerHTML = '';
+  const who = document.createElement('div');
+  who.style.display = 'flex';
+  who.style.flexDirection = 'column';
+  who.style.alignItems = 'center';
+  who.style.gap = '4px';
+  who.appendChild(avatarEl(state.youIndex));
+  const nm = document.createElement('div');
+  nm.className = 'seat-name';
+  nm.textContent = me.name;
+  who.appendChild(nm);
+  myAvatar.appendChild(who);
 
+  const pts = $('my-points');
+  pts.innerHTML = '<b></b><span>points</span>';
+  pts.querySelector('b').textContent = me.score;
+
+  // --- hand ---
   const hand = $('hand');
   hand.innerHTML = '';
   let anyPlayable = false;
@@ -275,12 +380,14 @@ function renderGame() {
     if (canPlay) {
       el.onclick = (ev) => {
         ev.stopPropagation();
+        const rect = el.getBoundingClientRect();
         if (sides.length === 1 || g.board.length === 0) {
+          pendingHandRect = rect;
           playTile(i, sides[0]);
         } else {
           selectedTileIndex = i;
+          pendingHandRect = rect;
           el.classList.add('selected');
-          const rect = el.getBoundingClientRect();
           sideChooser.classList.remove('hidden');
           const cw = sideChooser.offsetWidth;
           sideChooser.style.left = Math.max(8, Math.min(window.innerWidth - cw - 8, rect.left + rect.width / 2 - cw / 2)) + 'px';
@@ -291,10 +398,16 @@ function renderGame() {
     hand.appendChild(el);
   });
 
-  $('btn-draw').disabled = !myTurn || anyPlayable || g.boneyardCount === 0;
-  $('btn-pass').disabled = !myTurn || anyPlayable || g.boneyardCount > 0;
+  // --- draw / pass prompts + turn label ---
+  $('btn-draw').classList.toggle('show', myTurn && !anyPlayable && g.boneyardCount > 0);
+  $('btn-pass').classList.toggle('show', myTurn && !anyPlayable && g.boneyardCount === 0);
+  $('turn-label').textContent = g.over
+    ? ''
+    : myTurn
+      ? anyPlayable ? 'Your turn — tap a tile to play it' : 'No playable tiles…'
+      : `Waiting for ${state.players[g.turn]?.name}…`;
 
-  // round-over overlay
+  // --- round-over overlay ---
   const overlay = $('overlay');
   if (g.over) {
     overlay.classList.remove('hidden');
@@ -333,4 +446,19 @@ function renderGame() {
   } else {
     overlay.classList.add('hidden');
   }
+}
+
+/* FLIP animation: the tile starts where it was played from and flies to its board slot. */
+function flyIn(el, fromRect) {
+  const target = el.getBoundingClientRect();
+  const dx = fromRect.left + fromRect.width / 2 - (target.left + target.width / 2);
+  const dy = fromRect.top + fromRect.height / 2 - (target.top + target.height / 2);
+  el.style.transform = `translate(${dx}px, ${dy}px) scale(1.15) rotate(8deg)`;
+  requestAnimationFrame(() => {
+    requestAnimationFrame(() => {
+      el.classList.add('flying');
+      el.style.transform = '';
+      el.addEventListener('transitionend', () => el.classList.remove('flying'), { once: true });
+    });
+  });
 }

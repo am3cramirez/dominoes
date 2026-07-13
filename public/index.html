@@ -43,28 +43,36 @@
 
   <!-- GAME -->
   <section id="screen-game" class="screen">
-    <header id="game-header">
-      <span class="room-tag">Room <b id="game-code">—</b></span>
-      <div id="opponents"></div>
-      <span class="boneyard-tag">Boneyard: <b id="boneyard-count">0</b></span>
-    </header>
-
-    <div id="board-wrap">
-      <div id="board"></div>
-      <div id="board-empty" class="hint">Waiting for the first tile…</div>
-    </div>
-
-    <div id="turn-banner"></div>
-
-    <footer id="my-area">
-      <div id="my-info"></div>
-      <div id="hand"></div>
-      <div id="actions">
-        <button id="btn-draw" class="btn">Draw</button>
-        <button id="btn-pass" class="btn">Pass</button>
-        <button id="btn-leave-game" class="btn ghost">Leave</button>
+    <div id="table">
+      <button id="btn-leave-game" class="back-btn" title="Leave game">←</button>
+      <div id="game-chips">
+        <span class="chip">Room <b id="game-code">—</b></span>
+        <span class="chip">🁠 <b id="boneyard-count">0</b></span>
       </div>
-    </footer>
+
+      <div id="seat-top" class="seat seat-h"></div>
+      <div id="seat-left" class="seat seat-v"></div>
+      <div id="seat-right" class="seat seat-v"></div>
+
+      <div id="board-wrap">
+        <div id="board"></div>
+      </div>
+
+      <div id="action-float">
+        <button id="btn-draw" class="btn primary">Draw a tile</button>
+        <button id="btn-pass" class="btn primary">Pass</button>
+      </div>
+      <div id="turn-label"></div>
+
+      <div id="my-seat">
+        <div id="my-avatar"></div>
+        <div id="my-center">
+          <div id="hand"></div>
+        </div>
+        <div id="my-points" class="seat-points"></div>
+        <div id="turn-bar"></div>
+      </div>
+    </div>
 
     <!-- side chooser popover -->
     <div id="side-chooser" class="hidden">
