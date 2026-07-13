@@ -58,8 +58,12 @@ $('btn-create').onclick = () => {
 };
 
 $('btn-join').onclick = joinRoom;
-$('code-input').onkeydown = (e) => e.key === 'Enter' && joinRoom();
-$('name-input').onkeydown = (e) => e.key === 'Enter' && $('code-input').focus();
+$('code-input').onkeydown = (e) => {
+  if (e.key === 'Enter') joinRoom();
+};
+$('name-input').onkeydown = (e) => {
+  if (e.key === 'Enter') $('code-input').focus();
+};
 
 function joinRoom() {
   socket.emit('joinRoom', { name: $('name-input').value, code: $('code-input').value }, (res) => {
