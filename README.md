@@ -7,8 +7,10 @@ An online multiplayer dominoes game (draw variant) inspired by dominoes.playdrif
 - **Room codes** — host creates a room, gets a shareable 5-letter code, 2–4 players join with it
 - **Real-time gameplay** via Socket.IO, with server-authoritative rules (no cheating from the client)
 - **Draw dominoes rules** — double-six set, 7 tiles each, draw from the boneyard when you can't play, pass when it's empty
-- **Scoring across rounds** — round winner collects opponents' pips; first to 100 wins the match
-- **Blocked-game handling** — lowest pip count wins when nobody can move
+- **Scoring across rounds** — round winner collects ALL remaining pips on the table; first to 200 wins the match
+- **Team play** — with exactly 4 players it's partner dominoes (seats 1&3 vs 2&4, all 28 tiles dealt, no boneyard); points go to the team
+- **Bonuses** — +25 when everyone passes after your tile (pass-around), +25 when your winning tile fits both open ends (capicúa)
+- **Blocked-game handling** — fewest remaining pips wins when nobody can move (team totals in team play)
 - **Reconnect support** — drop mid-game and rejoin with the same name and room code; host can remove players who don't come back
 - Mobile-friendly UI with tile animations, turn indicators, and live opponent tile counts
 

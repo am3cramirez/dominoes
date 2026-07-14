@@ -13,7 +13,9 @@ const PORT = process.env.PORT || 3000;
 const MAX_PLAYERS = 4;
 const MIN_PLAYERS = 2;
 const HAND_SIZE = 7;
-const TARGET_SCORE = 100;
+const TARGET_SCORE = 200;
+const PASS_BONUS = 25; // everyone skips after your tile
+const CAPICUA_BONUS = 25; // winning tile fits both ends
 const ROOM_TTL_MS = 1000 * 60 * 60; // sweep rooms idle for an hour
 
 /** rooms: code -> room */
@@ -47,6 +49,26 @@ function shuffle(arr) {
 
 function pipSum(hand) {
   return hand.reduce((s, t) => s + t[0] + t[1], 0);
+}
+
+/* With exactly 4 players it's partner dominoes: seats 0&2 vs 1&3. */
+function teamsEnabled(room) {
+  return room.players.length === 4;
+}
+
+function teamOf(room, playerIndex) {
+  return teamsEnabled(room) ? playerIndex % 2 : playerIndex;
+}
+
+function teammates(room, playerIndex) {
+  return room.players
+    .map((_, i) => i)
+    .filter((i) => teamOf(room, i) === teamOf(room, playerIndex));
+}
+
+/* Points always go to the whole team (just the player when no teams). */
+function awardPoints(room, playerIndex, pts) {
+  for (const i of teammates(room, playerIndex)) room.players[i].score += pts;
 }
 
 function tilePlayableSides(tile, game) {
@@ -116,6 +138,9 @@ function startRound(room) {
     matchWinner: null,
     blocked: false,
     lastMove: null, // { playerIndex, tile, side } | { playerIndex, pass: true } | { playerIndex, drew: true }
+    lastTilePlayer: null, // who placed the most recent tile (for the pass-around bonus)
+    capicua: false,
+    bonuses: [], // e.g. [{ playerIndex, type: 'pass'|'capicua', points }]
   };
 }
 
@@ -130,14 +155,18 @@ function endRound(room, winnerIndex, blocked) {
   g.blocked = blocked;
   g.roundWinner = winnerIndex;
   if (winnerIndex !== null) {
-    const winner = room.players[winnerIndex];
-    const gained = room.players.reduce(
+    // Winner's side collects ALL remaining pips on the table (partner's included).
+    let gained = room.players.reduce(
       (s, p, i) => (i === winnerIndex ? s : s + pipSum(p.hand)),
       0
     );
-    winner.score += gained;
+    if (g.capicua) {
+      gained += CAPICUA_BONUS;
+      g.bonuses.push({ playerIndex: winnerIndex, type: 'capicua', points: CAPICUA_BONUS });
+    }
+    awardPoints(room, winnerIndex, gained);
     g.roundPoints = gained;
-    if (winner.score >= TARGET_SCORE) g.matchWinner = winnerIndex;
+    if (room.players[winnerIndex].score >= TARGET_SCORE) g.matchWinner = winnerIndex;
   } else {
     g.roundPoints = 0; // tie on a blocked game
   }
@@ -147,10 +176,28 @@ function checkBlocked(room) {
   const g = room.game;
   if (g.passes < room.players.length) return;
   // Everyone passed consecutively -> blocked. Lowest pip count wins (tie -> no winner).
+  // With teams, compare combined team pip counts.
   const sums = room.players.map((p) => pipSum(p.hand));
-  const min = Math.min(...sums);
-  const winners = sums.map((s, i) => (s === min ? i : -1)).filter((i) => i >= 0);
-  endRound(room, winners.length === 1 ? winners[0] : null, true);
+  let best = [];
+  if (teamsEnabled(room)) {
+    const teamSum = [0, 1].map((t) =>
+      sums.reduce((s, v, i) => (teamOf(room, i) === t ? s + v : s), 0)
+    );
+    if (teamSum[0] !== teamSum[1]) {
+      const winningTeam = teamSum[0] < teamSum[1] ? 0 : 1;
+      // credit the round to that team's player with the lightest hand
+      best = room.players
+        .map((_, i) => i)
+        .filter((i) => teamOf(room, i) === winningTeam)
+        .sort((a, b) => sums[a] - sums[b])
+        .slice(0, 1);
+    }
+  } else {
+    const min = Math.min(...sums);
+    best = sums.map((s, i) => (s === min ? i : -1)).filter((i) => i >= 0);
+    if (best.length > 1) best = [];
+  }
+  endRound(room, best.length === 1 ? best[0] : null, true);
 }
 
 /** Build the state payload one player is allowed to see. */
@@ -161,12 +208,14 @@ function stateFor(room, playerId) {
     code: room.code,
     hostId: room.hostId,
     youIndex: meIndex,
+    teams: teamsEnabled(room),
     players: room.players.map((p, i) => ({
       name: p.name,
       connected: p.connected,
       score: p.score,
       tileCount: p.hand.length,
       isHost: p.id === room.hostId,
+      team: teamOf(room, i),
       // reveal hands when the round is over
       hand: g && g.over ? p.hand : i === meIndex ? p.hand : undefined,
     })),
@@ -182,6 +231,8 @@ function stateFor(room, playerId) {
           roundWinner: g.roundWinner,
           roundPoints: g.roundPoints,
           matchWinner: g.matchWinner,
+          capicua: g.capicua,
+          bonuses: g.bonuses,
           lastMove: g.lastMove,
           targetScore: TARGET_SCORE,
         }
@@ -276,6 +327,14 @@ io.on('connection', (socket) => {
       side = sides[0];
     }
 
+    // Capicúa: the round-winning tile fits BOTH open ends of the line.
+    const isWinningTile = player.hand.length === 1;
+    if (isWinningTile && g.board.length > 0 && tile[0] !== tile[1]) {
+      const fitsLeft = tile[0] === g.leftEnd || tile[1] === g.leftEnd;
+      const fitsRight = tile[0] === g.rightEnd || tile[1] === g.rightEnd;
+      g.capicua = fitsLeft && fitsRight;
+    }
+
     player.hand.splice(tileIndex, 1);
 
     if (g.board.length === 0) {
@@ -294,6 +353,7 @@ io.on('connection', (socket) => {
 
     g.passes = 0;
     g.lastMove = { playerIndex, tile, side };
+    g.lastTilePlayer = playerIndex;
 
     if (player.hand.length === 0) {
       endRound(room, playerIndex, false);
@@ -326,7 +386,23 @@ io.on('connection', (socket) => {
     if (g.boneyard.length > 0) return cb?.({ error: 'You must draw from the boneyard first.' });
     g.passes += 1;
     g.lastMove = { playerIndex, pass: true };
-    checkBlocked(room);
+    // Pass-around bonus: everyone else skipped after the last tile played.
+    if (g.passes === room.players.length - 1 && g.lastTilePlayer !== null) {
+      awardPoints(room, g.lastTilePlayer, PASS_BONUS);
+      g.bonuses.push({ playerIndex: g.lastTilePlayer, type: 'pass', points: PASS_BONUS });
+      io.to(room.code).emit(
+        'toast',
+        `+${PASS_BONUS} to ${room.players[g.lastTilePlayer].name} — everyone else passed!`
+      );
+      // If the bonus alone reaches the target, the match ends right here.
+      if (room.players[g.lastTilePlayer].score >= TARGET_SCORE) {
+        g.over = true;
+        g.roundWinner = g.lastTilePlayer;
+        g.matchWinner = g.lastTilePlayer;
+        g.roundPoints = PASS_BONUS;
+      }
+    }
+    if (!g.over) checkBlocked(room);
     if (!g.over) advanceTurn(room);
     cb?.({ ok: true });
     broadcast(room);

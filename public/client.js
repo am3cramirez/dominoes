@@ -69,10 +69,17 @@ const INVADER = [
   '00011011000',
 ];
 
+function seatColor(playerIndex) {
+  // in team play (4 players) partners share a color
+  const p = state.players[playerIndex];
+  const idx = state.teams && p ? p.team : playerIndex;
+  return SEAT_COLORS[idx % SEAT_COLORS.length];
+}
+
 function avatarEl(playerIndex) {
   const div = document.createElement('div');
   div.className = 'avatar';
-  div.style.background = SEAT_COLORS[playerIndex % SEAT_COLORS.length];
+  div.style.background = seatColor(playerIndex);
   const ns = 'http://www.w3.org/2000/svg';
   const svg = document.createElementNS(ns, 'svg');
   svg.setAttribute('viewBox', '0 0 11 8');
@@ -236,9 +243,15 @@ function renderLobby() {
   const meHost = state.players[state.youIndex]?.isHost;
   $('btn-start').style.display = meHost ? '' : 'none';
   $('btn-start').disabled = state.players.length < 2;
-  $('lobby-hint').textContent = meHost
+  let hint = meHost
     ? state.players.length < 2 ? 'Waiting for at least one more player…' : 'Ready when you are!'
     : 'Waiting for the host to start the game…';
+  if (state.players.length === 4) {
+    const t0 = state.players.filter((p) => p.team === 0).map((p) => p.name).join(' & ');
+    const t1 = state.players.filter((p) => p.team === 1).map((p) => p.name).join(' & ');
+    hint += ` Teams: ${t0} vs ${t1}.`;
+  }
+  $('lobby-hint').textContent = hint;
 }
 
 /* Opponents fill seats clockwise around the table, relative to me. */
@@ -412,30 +425,63 @@ function renderGame() {
   if (g.over) {
     overlay.classList.remove('hidden');
     const isMatchOver = g.matchWinner !== null && g.matchWinner !== undefined;
-    const winnerName = g.roundWinner !== null ? state.players[g.roundWinner]?.name : null;
+    const sideName = (i) => {
+      if (i === null || i === undefined) return null;
+      if (!state.teams) return state.players[i]?.name;
+      return state.players.filter((p) => p.team === state.players[i].team).map((p) => p.name).join(' & ');
+    };
+    const winnerIdx = isMatchOver ? g.matchWinner : g.roundWinner;
+    const iWon = winnerIdx !== null && (state.teams
+      ? state.players[winnerIdx]?.team === state.players[state.youIndex]?.team
+      : winnerIdx === state.youIndex);
     $('overlay-title').textContent = isMatchOver
-      ? `🏆 ${state.players[g.matchWinner]?.name} wins the match!`
+      ? `🏆 ${sideName(g.matchWinner)} win${state.teams ? '' : 's'} the match!`
       : g.roundWinner === null
         ? 'Blocked — tie round!'
-        : g.roundWinner === state.youIndex
+        : iWon
           ? '🎉 You won the round!'
-          : `${winnerName} won the round`;
-    $('overlay-sub').textContent = g.blocked
-      ? 'The game was blocked — lowest pip count takes it.'
-      : winnerName ? `${winnerName} played all their tiles${g.roundPoints ? ` (+${g.roundPoints} pts)` : ''}.` : '';
+          : `${sideName(g.roundWinner)} won the round`;
+
+    const subParts = [];
+    if (g.blocked) subParts.push('The game was blocked — fewest remaining pips takes it.');
+    else if (g.roundWinner !== null) subParts.push(`All remaining pips collected: +${g.roundPoints} pts.`);
+    for (const b of g.bonuses || []) {
+      subParts.push(
+        b.type === 'capicua'
+          ? `Capicúa! The winning tile fit both ends: +${b.points}.`
+          : `${state.players[b.playerIndex]?.name} made everyone pass: +${b.points}.`
+      );
+    }
+    $('overlay-sub').textContent = subParts.join(' ');
 
     const scores = $('overlay-scores');
     scores.innerHTML = '';
-    [...state.players]
-      .map((p, i) => ({ p, i }))
-      .sort((a, b) => b.p.score - a.p.score)
-      .forEach(({ p, i }) => {
+    let rows;
+    if (state.teams) {
+      rows = [0, 1].map((t) => {
+        const members = state.players.map((p, i) => ({ p, i })).filter(({ p }) => p.team === t);
+        return {
+          label: members.map(({ p }) => p.name).join(' & ') + (members.some(({ i }) => i === state.youIndex) ? ' (you)' : ''),
+          score: members[0].p.score,
+          winner: winnerIdx !== null && state.players[winnerIdx]?.team === t,
+        };
+      });
+    } else {
+      rows = state.players.map((p, i) => ({
+        label: p.name + (i === state.youIndex ? ' (you)' : ''),
+        score: p.score,
+        winner: i === winnerIdx,
+      }));
+    }
+    rows
+      .sort((a, b) => b.score - a.score)
+      .forEach((r) => {
         const row = document.createElement('div');
-        row.className = 'row' + (i === (isMatchOver ? g.matchWinner : g.roundWinner) ? ' winner' : '');
+        row.className = 'row' + (r.winner ? ' winner' : '');
         const left = document.createElement('span');
-        left.textContent = p.name + (i === state.youIndex ? ' (you)' : '');
+        left.textContent = r.label;
         const right = document.createElement('span');
-        right.textContent = `${p.score} pts`;
+        right.textContent = `${r.score} pts`;
         row.append(left, right);
         scores.appendChild(row);
       });
