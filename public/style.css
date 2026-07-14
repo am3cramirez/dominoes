@@ -38,7 +38,8 @@ body {
   text-align: center;
 }
 
-h1 { font-size: 2.2rem; margin-bottom: 4px; }
+h1 { font-size: 2.2rem; margin-bottom: 4px; display: flex; align-items: center; justify-content: center; gap: 10px; }
+.logo-tile { width: 26px; height: 46px; }
 .tagline { color: #667; margin-bottom: 24px; }
 
 input[type="text"] {
