@@ -21,6 +21,7 @@ const AUTO_DELAY = Number(process.env.AUTO_DELAY_MS) || 900; // pause before aut
 const LOBBY_COUNTDOWN_MS = Number(process.env.LOBBY_COUNTDOWN_MS) || 25000; // join window after host presses Start
 const BOT_MOVE_MS = Number(process.env.BOT_MOVE_MS) || 1300; // CPU-filled players "think" this long per turn
 const ROUND_TALLY_MS = Number(process.env.ROUND_TALLY_MS) || 3200; // gap before the next round auto-deals
+const BLOCKED_REVEAL_MS = Number(process.env.BLOCKED_REVEAL_MS) || 7000; // longer hold to reveal hands on a locked game
 const OPENING_BLOCK_BONUS = 25; // round-opening tile shuts out the next opponent, but not their partner too
 const ROOM_TTL_MS = 1000 * 60 * 60; // sweep rooms idle for an hour
 
@@ -443,14 +444,16 @@ function endRound(room, winnerIndex, blocked) {
   }
 
   // Mid-match rounds deal themselves automatically once the score tally has
-  // had time to play out on screen — no "next round" button. A finished
-  // match waits for the host to press Start again (fresh lobby countdown).
+  // had time to play out on screen — no "next round" button. A locked game
+  // holds longer so everyone can see the revealed hands and pip counts. A
+  // finished match waits for the host to press Start again.
   if (g.matchWinner === null || g.matchWinner === undefined) {
+    const delay = blocked ? BLOCKED_REVEAL_MS : ROUND_TALLY_MS;
     room.roundTimer = setTimeout(() => {
       if (rooms.get(room.code) !== room) return;
       room.roundTimer = null;
       if (tryStartRound(room)) broadcast(room);
-    }, ROUND_TALLY_MS);
+    }, delay);
   }
 }
 

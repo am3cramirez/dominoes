@@ -11,7 +11,8 @@ An online multiplayer dominoes game (draw variant) inspired by dominoes.playdrif
 - **Scoring across rounds** — round winner collects ALL remaining pips on the table; first to 200 wins the match
 - **Team play** — with exactly 4 players it's partner dominoes (seats 1&3 vs 2&4, all 28 tiles dealt, no boneyard); points go to the team
 - **Bonuses** — +25 when everyone passes after your tile and you can still play (pass-around), +25 when your winning tile fits both open ends (capicúa), +25 when your round-opening tile shuts out the very next opponent while your partner can still play (opening block). No bonus is ever awarded on the move that locks the game
-- **Locked-game handling** — when nobody can move, the round goes to whichever of just two players holds the lighter hand: the one who locked it (played the last tile) and the player immediately after them. Equal pips → tie, no score
+- **Locked-game handling** — when nobody can move, the round goes to whichever of just two players holds the lighter hand: the one who locked it (played the last tile) and the player immediately after them. Equal pips → tie, no score. On a lock the table holds while every hand flips face-up with a pip total under each player, so you can see the count
+- **Sound** — synthesized effects (no asset files) for tile placement, your turn, bonuses, and round results, with a mute toggle in the top-right
 - **Click-to-place or drag** — tap a tile to preview where it lands (a highlighted ghost at each valid end), then tap the ghost to confirm; or drag it straight onto the board
 - **Anchored snake board** — the chain bends cleanly at the table edges like a real layout, and the whole board zooms out smoothly to keep everything in view as it grows
 - **15-second turn timer** — visible countdown; when it runs out the CPU plays a valid tile for you. CPU-filled seats move in ~1.3s

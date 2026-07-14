@@ -13,11 +13,82 @@ let overlayHoldUntil = 0; // keep the tally hidden while the smack finale plays
 let lastLiveScores = null; // scores from the moment before the round ended (tally "from" values)
 let tallyTriggeredForRound = false; // guards runTally() to once per round-over transition
 let lastRoundId = null; // detects a fresh round so we announce its starter once
+let prevMyTurn = false; // detects the moment it becomes your turn (for the chime)
 
 function show(name) {
   Object.values(screens).forEach((s) => s.classList.remove('active'));
   screens[name].classList.add('active');
 }
+
+/* ---------- Sound (synthesized via Web Audio — no asset files) ---------- */
+const Sound = (() => {
+  let ctx = null;
+  let muted = localStorage.getItem('dom-muted') === '1';
+  const ensure = () => {
+    if (!ctx) {
+      const AC = window.AudioContext || window.webkitAudioContext;
+      if (!AC) return null;
+      ctx = new AC();
+    }
+    if (ctx.state === 'suspended') ctx.resume();
+    return ctx;
+  };
+  const tone = (freq, dur, { type = 'sine', gain = 0.18, slideTo = null, delay = 0 } = {}) => {
+    const c = ensure();
+    if (!c) return;
+    const t0 = c.currentTime + delay;
+    const o = c.createOscillator();
+    const g = c.createGain();
+    o.type = type;
+    o.frequency.setValueAtTime(freq, t0);
+    if (slideTo) o.frequency.exponentialRampToValueAtTime(slideTo, t0 + dur);
+    g.gain.setValueAtTime(0.0001, t0);
+    g.gain.exponentialRampToValueAtTime(gain, t0 + 0.012);
+    g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+    o.connect(g).connect(c.destination);
+    o.start(t0);
+    o.stop(t0 + dur + 0.03);
+  };
+  const noise = (dur, { freq = 1600, q = 1, gain = 0.3 } = {}) => {
+    const c = ensure();
+    if (!c) return;
+    const buf = c.createBuffer(1, Math.floor(c.sampleRate * dur), c.sampleRate);
+    const d = buf.getChannelData(0);
+    for (let i = 0; i < d.length; i++) d[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / d.length, 3);
+    const src = c.createBufferSource();
+    src.buffer = buf;
+    const f = c.createBiquadFilter();
+    f.type = 'bandpass';
+    f.frequency.value = freq;
+    f.Q.value = q;
+    const g = c.createGain();
+    g.gain.value = gain;
+    src.connect(f).connect(g).connect(c.destination);
+    src.start();
+  };
+  const api = {
+    get muted() { return muted; },
+    toggle() {
+      muted = !muted;
+      localStorage.setItem('dom-muted', muted ? '1' : '0');
+      if (!muted) api.tick();
+      return muted;
+    },
+    resume() { if (!muted) ensure(); },
+    place() { if (muted) return; noise(0.09, { freq: 1900, gain: 0.28 }); tone(170, 0.1, { type: 'triangle', gain: 0.22, slideTo: 90 }); },
+    turn() { if (muted) return; tone(660, 0.13, { type: 'sine', gain: 0.16 }); tone(990, 0.16, { type: 'sine', gain: 0.12, delay: 0.08 }); },
+    tick() { if (muted) return; tone(520, 0.05, { type: 'square', gain: 0.08 }); },
+    bonus() { if (muted) return; [523, 659, 784, 1047].forEach((f, i) => tone(f, 0.16, { type: 'triangle', gain: 0.16, delay: i * 0.075 })); },
+    win() { if (muted) return; [392, 523, 659].forEach((f, i) => tone(f, 0.22, { type: 'sine', gain: 0.18, delay: i * 0.09 })); },
+    flip() { if (muted) return; noise(0.16, { freq: 900, q: 0.7, gain: 0.18 }); },
+    lose() { if (muted) return; tone(330, 0.3, { type: 'sine', gain: 0.14, slideTo: 180 }); },
+  };
+  return api;
+})();
+// The browser only lets audio start after a gesture; wake it on the first one.
+['pointerdown', 'keydown'].forEach((ev) =>
+  window.addEventListener(ev, () => Sound.resume(), { once: false, passive: true })
+);
 
 function toast(msg) {
   const el = document.createElement('div');
@@ -32,8 +103,8 @@ const PIP_CELLS = {
   0: [], 1: [4], 2: [0, 8], 3: [0, 4, 8],
   4: [0, 2, 6, 8], 5: [0, 2, 4, 6, 8], 6: [0, 2, 3, 5, 6, 8],
 };
-// one color per pip value, playdrift-style
-const PIP_COLORS = ['#8a93a3', '#3b7fc4', '#8a6d4a', '#d94f4f', '#4caf7d', '#2ab5b0', '#e8923a'];
+// one vivid, well-separated color per pip value (1-6); 0 has no pips
+const PIP_COLORS = ['#8a93a3', '#2563eb', '#16a34a', '#dc2626', '#7c3aed', '#f97316', '#0891b2'];
 
 function half(value) {
   const h = document.createElement('div');
@@ -153,6 +224,14 @@ $('btn-leave-game').onclick = () => {
   if (confirm('Leave the game? Your tiles return to the boneyard.')) leaveRoom();
 };
 
+const muteBtn = $('btn-mute');
+function syncMuteBtn() {
+  muteBtn.textContent = Sound.muted ? '🔇' : '🔊';
+  muteBtn.classList.toggle('muted', Sound.muted);
+}
+muteBtn.onclick = () => { Sound.toggle(); syncMuteBtn(); };
+syncMuteBtn();
+
 function leaveRoom() {
   socket.emit('leaveRoom');
   state = null;
@@ -161,8 +240,10 @@ function leaveRoom() {
   lastLiveScores = null;
   tallyTriggeredForRound = false;
   lastRoundId = null;
+  prevMyTurn = false;
   $('tally').classList.add('hidden');
   $('overlay').classList.add('hidden');
+  $('lock-banner').classList.add('hidden');
   show('home');
 }
 
@@ -199,11 +280,11 @@ function playableSides(tile) {
    rightward and bends counterclockwise along the table edges (up the right
    side), the left side grows leftward and bends down — like PlayDrift.
    The whole board container is then scaled so everything always fits. */
-const U = 32;      // short side of a tile in board units
+const U = 40;      // short side of a tile in board units (bigger = larger pips)
 const LONG = U * 2;
 const GAP = 3;
-const SNAKE_X = 340; // where the line bends
-const SNAKE_Y = 230;
+const SNAKE_X = 380; // where the line bends
+const SNAKE_Y = 250;
 
 let boardMeta = { scale: 1, ends: {}, origin: null }; // refreshed each render
 
@@ -213,16 +294,17 @@ function layoutBoard(g) {
   const anchorIdx = Math.min(g.anchorIndex ?? 0, g.board.length - 1);
   const rot = (d) => ({ x: d.y, y: -d.x }); // right end turns up, left end turns down
 
+  // Every tile — doubles included — lies inline with the direction of travel:
+  // horizontal along a horizontal run, vertical along a vertical run.
   const mk = (tile, near, far, cx, cy, d) => {
-    const isD = tile[0] === tile[1];
     const horiz = d.x !== 0;
-    const w = isD ? (horiz ? U : LONG) : horiz ? LONG : U;
-    const h = isD ? (horiz ? LONG : U) : horiz ? U : LONG;
-    let orient, halves;
-    if (isD) { orient = horiz ? 'v' : 'h'; halves = [tile[0], tile[1]]; }
-    else if (horiz) { orient = 'h'; halves = d.x > 0 ? [near, far] : [far, near]; }
-    else { orient = 'v'; halves = d.y > 0 ? [near, far] : [far, near]; }
-    return { x: cx, y: cy, w, h, orient, halves };
+    const w = horiz ? LONG : U;
+    const h = horiz ? U : LONG;
+    let halves;
+    if (tile[0] === tile[1]) halves = [tile[0], tile[1]];
+    else if (horiz) halves = d.x > 0 ? [near, far] : [far, near];
+    else halves = d.y > 0 ? [near, far] : [far, near];
+    return { x: cx, y: cy, w, h, orient: horiz ? 'h' : 'v', halves };
   };
 
   // `p` is the open connection point at the current end of this arm; tiles are
@@ -235,9 +317,8 @@ function layoutBoard(g) {
     const out = [];
     for (const i of indices) {
       const tile = g.board[i];
-      const isD = tile[0] === tile[1];
-      const along = isD ? U : LONG; // extent along travel
-      const cross = isD ? LONG : U; // extent across travel
+      const along = LONG; // every tile lies inline, LONG along travel
+      const cross = U; // U across travel
       const step = along + GAP;
       // Spiral inward a little each full pair of turns so long chains keep
       // fitting; only the axis of travel gates the bend.
@@ -262,15 +343,14 @@ function layoutBoard(g) {
   };
 
   const at = g.board[anchorIdx];
-  const aD = at[0] === at[1];
   placements.push({
     index: anchorIdx, dir: { x: 1, y: 0 },
     x: 0, y: 0,
-    w: aD ? U : LONG, h: aD ? LONG : U,
-    orient: aD ? 'v' : 'h',
+    w: LONG, h: U,
+    orient: 'h',
     halves: [at[0], at[1]],
   });
-  const aHalf = (aD ? U : LONG) / 2 + GAP;
+  const aHalf = LONG / 2 + GAP;
 
   const rightIdx = [];
   for (let i = anchorIdx + 1; i < g.board.length; i++) rightIdx.push(i);
@@ -390,9 +470,17 @@ function attachTileInteraction(el, tileIndex, tile, sides) {
         }
       } else {
         cleanup();
-        // A click (no drag) toggles a placement preview instead of playing.
-        if (selectedTileIndex === tileIndex) clearPreview();
-        else showPreview(tileIndex, tile, sides, el);
+        // A tile that fits only one end plays immediately on a click. A tile
+        // that fits both ends shows placement previews to pick a side.
+        if (sides.length === 1 || state.game.board.length === 0) {
+          pendingHandRect = el.getBoundingClientRect();
+          clearPreview();
+          playTile(tileIndex, sides[0]);
+        } else if (selectedTileIndex === tileIndex) {
+          clearPreview();
+        } else {
+          showPreview(tileIndex, tile, sides, el);
+        }
       }
     };
 
@@ -490,6 +578,7 @@ function clearPreview() {
 socket.on('bonus', (b) => {
   const delay = b.type === 'capicua' ? 900 : 0; // let the smack land first
   setTimeout(() => {
+    Sound.bonus();
     const banner = $('bonus-banner');
     banner.querySelector('.bonus-points').textContent = `+${b.points}`;
     let who = b.name;
@@ -619,19 +708,43 @@ function buildSeat(seatEl, player, playerIndex, g) {
   who.appendChild(nm);
   seatEl.appendChild(who);
 
+  const revealed = g.over && Array.isArray(player.hand);
   const stack = document.createElement('div');
-  stack.className = 'stack';
-  for (let i = 0; i < Math.min(player.tileCount, 7); i++) {
-    const t = document.createElement('div');
-    t.className = 'back-tile';
-    stack.appendChild(t);
+  stack.className = revealed ? 'reveal-hand' : 'stack';
+  if (revealed) {
+    // Flip their tiles face-up so everyone can see what was left.
+    player.hand.forEach((tile, k) => {
+      const d = dominoEl(tile, 'h');
+      d.classList.add('reveal-tile');
+      d.style.animationDelay = k * 70 + 'ms';
+      stack.appendChild(d);
+    });
+    if (player.hand.length === 0) {
+      const empty = document.createElement('div');
+      empty.className = 'reveal-empty';
+      empty.textContent = 'empty';
+      stack.appendChild(empty);
+    }
+  } else {
+    for (let i = 0; i < Math.min(player.tileCount, 7); i++) {
+      const t = document.createElement('div');
+      t.className = 'back-tile';
+      stack.appendChild(t);
+    }
   }
   seatEl.appendChild(stack);
 
   const pts = document.createElement('div');
   pts.className = 'seat-points';
-  pts.innerHTML = '<b></b><span>points</span>';
-  pts.querySelector('b').textContent = player.score;
+  if (revealed) {
+    // During the reveal, show the remaining pip total prominently.
+    pts.innerHTML = '<b></b><span>pips left</span>';
+    pts.querySelector('b').textContent = player.hand.reduce((s, t) => s + t[0] + t[1], 0);
+    pts.classList.add('reveal-total');
+  } else {
+    pts.innerHTML = '<b></b><span>points</span>';
+    pts.querySelector('b').textContent = player.score;
+  }
   seatEl.appendChild(pts);
 
   const timer = document.createElement('div');
@@ -728,6 +841,7 @@ function renderGame() {
 
   if (smackFinale) {
     overlayHoldUntil = Date.now() + 2300;
+    Sound.place();
     runSmackFinale(board, g, seatOfPlayer);
   } else if (g.board.length > prevBoardLen && g.lastMove?.tile && board.children.length > 0) {
     const newest = newestTileEl(board, g);
@@ -739,10 +853,15 @@ function renderGame() {
       if (seatEl) fromRect = seatEl.getBoundingClientRect();
     }
     if (fromRect) flyIn(newest, fromRect);
+    Sound.place();
   }
   prevBoardLen = g.board.length;
   pendingHandRect = null;
   wasOver = g.over;
+
+  // A soft chime the moment it becomes your turn.
+  if (myTurn && !prevMyTurn) Sound.turn();
+  prevMyTurn = myTurn;
 
   // --- my seat ---
   const mySeat = $('my-seat');
@@ -762,8 +881,15 @@ function renderGame() {
   myAvatar.appendChild(who);
 
   const pts = $('my-points');
-  pts.innerHTML = '<b></b><span>points</span>';
-  pts.querySelector('b').textContent = me.score;
+  if (g.over && Array.isArray(me.hand)) {
+    pts.innerHTML = '<b></b><span>pips left</span>';
+    pts.querySelector('b').textContent = me.hand.reduce((s, t) => s + t[0] + t[1], 0);
+    pts.classList.add('reveal-total');
+  } else {
+    pts.classList.remove('reveal-total');
+    pts.innerHTML = '<b></b><span>points</span>';
+    pts.querySelector('b').textContent = me.score;
+  }
 
   // --- hand ---
   const hand = $('hand');
@@ -797,14 +923,37 @@ function renderGame() {
   }
   $('turn-label').textContent = label;
 
-  // --- round result: a high-score-style tally, no click required ---
-  if (g.over) {
+  // --- round result ---
+  if (g.over && g.blocked) {
+    // Locked game: keep the table visible with every hand flipped up and pip
+    // totals under each seat. A small banner names the outcome; no full-screen
+    // tally covers the reveal, and the server holds here longer.
+    const lb = $('lock-banner');
+    lb.textContent = g.roundWinner === null
+      ? 'Locked — tied, no score'
+      : `Locked — +${g.roundPoints}`;
+    lb.classList.remove('hidden');
+    $('tally').classList.add('hidden');
+    if (!tallyTriggeredForRound) {
+      tallyTriggeredForRound = true;
+      Sound.flip();
+      // If this locked round also wins the match, show the match card after
+      // the reveal has had time to sink in.
+      if (g.matchWinner !== null && g.matchWinner !== undefined) {
+        setTimeout(() => {
+          if (state?.game?.over) { $('lock-banner').classList.add('hidden'); renderOverlay(state.game); }
+        }, 4200);
+      }
+    }
+  } else if (g.over) {
+    $('lock-banner').classList.add('hidden');
     if (!tallyTriggeredForRound) {
       tallyTriggeredForRound = true;
       const wait = Math.max(0, overlayHoldUntil - Date.now());
       setTimeout(() => state?.game?.over && runTally(state.game), wait);
     }
   } else {
+    $('lock-banner').classList.add('hidden');
     $('tally').classList.add('hidden');
     $('overlay').classList.add('hidden');
   }
@@ -854,6 +1003,7 @@ function runTally(g) {
   const isMatchOver = g.matchWinner !== null && g.matchWinner !== undefined;
   const winnerIdx = isMatchOver ? g.matchWinner : g.roundWinner;
   const rows = buildScoreRows(g, winnerIdx).sort((a, b) => b.to - a.to);
+  (g.roundPoints || 0) > 0 ? Sound.win() : Sound.tick();
 
   // No "so-and-so won the round" — just how many points were scored.
   const pts = g.roundPoints || 0;

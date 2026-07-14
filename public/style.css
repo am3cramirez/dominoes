@@ -1,18 +1,18 @@
 * { box-sizing: border-box; margin: 0; padding: 0; }
 
 :root {
-  --bg-outer: #232c3d;
-  --table: #3a465e;
-  --table-edge: #2e3950;
-  --panel: rgba(148, 160, 182, .38);
-  --panel-solid: #77839b;
+  --bg-outer: #10331f;
+  --table: #15683f;   /* deeper green felt for contrast against bright tiles */
+  --table-edge: #0c4429;
+  --panel: rgba(9, 30, 20, .42);
+  --panel-solid: #0c4a2e;
   --ink: #1c2430;
   --card-bg: #ffffff;
-  --accent: #ff9f1c;
+  --accent: #ffb020;
   --accent-dark: #e58500;
-  --tile-face: #edeae2;
-  --tile-back: #e6e2d8;
-  --tile-edge: rgba(0,0,0,.18);
+  --tile-face: #fffdf7;   /* near-white ivory so pips pop */
+  --tile-back: #f0ac3c;   /* warm face-down back, distinct from the face */
+  --tile-edge: rgba(0,0,0,.28);
 }
 
 html, body { height: 100%; }
@@ -135,6 +135,9 @@ input[type="text"]:focus { border-color: var(--accent); }
   padding: 6px 12px; border-radius: 20px;
 }
 .chip b { color: #fff; letter-spacing: .1em; }
+.chip-btn { border: none; cursor: pointer; font-size: .95rem; line-height: 1; padding: 5px 11px; }
+.chip-btn:hover { background: rgba(0,0,0,.5); }
+.chip-btn.muted { opacity: .55; }
 
 /* ---- Seats ---- */
 .seat {
@@ -187,6 +190,34 @@ input[type="text"]:focus { border-color: var(--accent); }
 .seat-h .back-tile:not(:first-child) { margin-left: -16px; }
 .seat-v .back-tile { width: 42px; height: 26px; }
 .seat-v .back-tile:not(:first-child) { margin-top: -16px; }
+
+/* revealed hand at a locked game — tiles flip face-up */
+.reveal-hand { display: flex; flex-wrap: wrap; gap: 3px; max-width: 130px; justify-content: center; }
+.reveal-tile {
+  width: 40px !important; height: 20px !important;
+  transform-origin: center; animation: flip-up .4s ease both;
+}
+.reveal-tile .pip { width: 4.5px; height: 4.5px; }
+.reveal-empty { color: #cfe6d8; font-size: .72rem; font-style: italic; opacity: .8; }
+@keyframes flip-up {
+  0% { transform: rotateY(90deg); opacity: 0; }
+  60% { transform: rotateY(-12deg); opacity: 1; }
+  100% { transform: rotateY(0); }
+}
+.seat-points.reveal-total b { color: var(--accent); font-size: 1.35rem; }
+.seat-points.reveal-total { animation: total-pop .4s .3s both cubic-bezier(.2,1.4,.4,1); }
+@keyframes total-pop { from { transform: scale(.5); opacity: .3; } to { transform: scale(1); opacity: 1; } }
+
+/* "Game locked" banner, centred over the table (does not cover the seats) */
+#lock-banner {
+  position: absolute; top: 46%; left: 50%; transform: translate(-50%, -50%);
+  z-index: 20; background: rgba(12,16,22,.82); color: var(--accent);
+  font-weight: 900; font-size: 1.5rem; letter-spacing: .04em;
+  padding: 12px 26px; border-radius: 14px; pointer-events: none;
+  box-shadow: 0 8px 24px rgba(0,0,0,.5);
+  animation: tally-points-pop .4s cubic-bezier(.2,1.4,.4,1) both;
+}
+#lock-banner.hidden { display: none; }
 
 .kick {
   border: none; background: rgba(0,0,0,.4); color: #fff;
@@ -337,28 +368,32 @@ input[type="text"]:focus { border-color: var(--accent); }
 
 /* ---- Domino tiles ---- */
 .domino {
-  display: flex; background: var(--tile-face);
-  border: 1px solid var(--tile-edge); border-radius: 7px;
-  box-shadow: 0 2px 5px rgba(0,0,0,.35);
+  display: flex;
+  background: linear-gradient(160deg, #ffffff 0%, var(--tile-face) 55%, #f1ece0 100%);
+  border: 1px solid var(--tile-edge); border-radius: 8px;
+  box-shadow: 0 3px 7px rgba(0,0,0,.45), inset 0 1px 0 rgba(255,255,255,.9);
   overflow: hidden; flex-shrink: 0;
   position: relative;
 }
-.domino.h { flex-direction: row; width: 76px; height: 38px; }
-.domino.v { flex-direction: column; width: 38px; height: 76px; }
+.domino.h { flex-direction: row; width: 80px; height: 40px; }
+.domino.v { flex-direction: column; width: 40px; height: 80px; }
 .domino .half { flex: 1; position: relative; }
-.domino.h .half:first-child { border-right: 2px solid rgba(0,0,0,.14); }
-.domino.v .half:first-child { border-bottom: 2px solid rgba(0,0,0,.14); }
+.domino.h .half:first-child { border-right: 2px solid rgba(0,0,0,.22); }
+.domino.v .half:first-child { border-bottom: 2px solid rgba(0,0,0,.22); }
 
 .half .pips {
-  position: absolute; inset: 4px;
+  position: absolute; inset: 5px;
   display: grid; grid-template-columns: repeat(3, 1fr); grid-template-rows: repeat(3, 1fr);
 }
-.pip { width: 7px; height: 7px; border-radius: 50%; place-self: center; box-shadow: inset 0 1px 1px rgba(0,0,0,.35); }
+.pip {
+  width: 10px; height: 10px; border-radius: 50%; place-self: center;
+  box-shadow: inset 0 1.5px 1.5px rgba(255,255,255,.45), 0 1px 1.5px rgba(0,0,0,.4);
+}
 
 /* hand tiles are bigger and interactive */
 .hand-tile { cursor: pointer; transition: transform .12s, box-shadow .12s; border-radius: 9px; }
-.hand-tile.v { width: 56px; height: 112px; }
-.hand-tile .pip { width: 11px; height: 11px; }
+.hand-tile.v { width: 58px; height: 116px; }
+.hand-tile .pip { width: 13px; height: 13px; }
 .hand-tile.playable:hover { transform: translateY(-10px); box-shadow: 0 10px 18px rgba(0,0,0,.45); }
 .hand-tile.dead { opacity: .5; cursor: default; filter: saturate(.5); }
 .hand-tile.selected { transform: translateY(-12px); box-shadow: 0 0 0 3px #fff, 0 10px 18px rgba(0,0,0,.45); }
@@ -449,11 +484,11 @@ input[type="text"]:focus { border-color: var(--accent); }
 
 @media (max-width: 700px) {
   #board-wrap { inset: 80px 70px 150px; }
-  .domino.h { width: 56px; height: 28px; }
-  .domino.v { width: 28px; height: 56px; }
-  .pip { width: 5px; height: 5px; }
-  .hand-tile.v { width: 44px; height: 88px; }
-  .hand-tile .pip { width: 8px; height: 8px; }
+  .domino.h { width: 60px; height: 30px; }
+  .domino.v { width: 30px; height: 60px; }
+  .pip { width: 7px; height: 7px; }
+  .hand-tile.v { width: 46px; height: 92px; }
+  .hand-tile .pip { width: 10px; height: 10px; }
   .avatar { width: 42px; height: 42px; }
   #my-seat { min-width: 0; width: 100%; border-radius: 0; gap: 10px; padding: 10px 12px 16px; }
   .back-tile { width: 20px; height: 32px; }
