@@ -196,10 +196,98 @@ function playableSides(tile) {
   return sides;
 }
 
+/* ---------- Board layout: anchored snake that zooms to fit ----------
+   The first tile stays at the origin; the right side of the chain grows
+   rightward and bends counterclockwise along the table edges (up the right
+   side), the left side grows leftward and bends down — like PlayDrift.
+   The whole board container is then scaled so everything always fits. */
+const U = 32;      // short side of a tile in board units
+const LONG = U * 2;
+const GAP = 3;
+const SNAKE_X = 340; // where the line bends
+const SNAKE_Y = 230;
+
+let boardMeta = { scale: 1, ends: {}, origin: null }; // refreshed each render
+
+function layoutBoard(g) {
+  const placements = [];
+  if (!g.board.length) return { placements, ends: {} };
+  const anchorIdx = Math.min(g.anchorIndex ?? 0, g.board.length - 1);
+  const rot = (d) => ({ x: d.y, y: -d.x }); // right end turns up, left end turns down
+
+  const mk = (tile, near, far, cx, cy, d) => {
+    const isD = tile[0] === tile[1];
+    const horiz = d.x !== 0;
+    const w = isD ? (horiz ? U : LONG) : horiz ? LONG : U;
+    const h = isD ? (horiz ? LONG : U) : horiz ? U : LONG;
+    let orient, halves;
+    if (isD) { orient = horiz ? 'v' : 'h'; halves = [tile[0], tile[1]]; }
+    else if (horiz) { orient = 'h'; halves = d.x > 0 ? [near, far] : [far, near]; }
+    else { orient = 'v'; halves = d.y > 0 ? [near, far] : [far, near]; }
+    return { x: cx, y: cy, w, h, orient, halves };
+  };
+
+  const walk = (indices, nearOf, farOf, start, dir) => {
+    let px = start, py = 0, d = dir;
+    let turns = 0;
+    const out = [];
+    for (const i of indices) {
+      const tile = g.board[i];
+      const len = (tile[0] === tile[1] ? U : LONG) + GAP;
+      // shrink the box a little on every bend so laps spiral inward;
+      // only the axis of travel is checked, so a fresh turn can't re-trigger
+      const bx = SNAKE_X - turns * (U + 10);
+      const by = SNAKE_Y - turns * (U + 10);
+      let ex = px + d.x * len;
+      let ey = py + d.y * len;
+      if ((d.x !== 0 && Math.abs(ex) > bx) || (d.y !== 0 && Math.abs(ey) > by)) {
+        // L-corner: step past the previous tile's end so the turning tile
+        // sits flush beside it instead of overlapping it
+        const across = (tile[0] === tile[1] ? LONG : U) / 2 + GAP;
+        px += d.x * across;
+        py += d.y * across;
+        d = rot(d);
+        turns++;
+        ex = px + d.x * len;
+        ey = py + d.y * len;
+      }
+      out.push({ index: i, dir: d, ...mk(tile, nearOf(tile), farOf(tile), (px + ex) / 2, (py + ey) / 2, d) });
+      px = ex; py = ey;
+    }
+    return { out, end: { x: px, y: py, dir: d } };
+  };
+
+  const at = g.board[anchorIdx];
+  const aD = at[0] === at[1];
+  placements.push({
+    index: anchorIdx, dir: { x: 1, y: 0 },
+    x: 0, y: 0,
+    w: aD ? U : LONG, h: aD ? LONG : U,
+    orient: aD ? 'v' : 'h',
+    halves: [at[0], at[1]],
+  });
+  const aHalf = (aD ? U : LONG) / 2 + GAP;
+
+  const rightIdx = [];
+  for (let i = anchorIdx + 1; i < g.board.length; i++) rightIdx.push(i);
+  const leftIdx = [];
+  for (let i = anchorIdx - 1; i >= 0; i--) leftIdx.push(i);
+
+  const right = walk(rightIdx, (t) => t[0], (t) => t[1], aHalf, { x: 1, y: 0 });
+  const left = walk(leftIdx, (t) => t[1], (t) => t[0], -aHalf, { x: -1, y: 0 });
+  placements.push(...right.out, ...left.out);
+  placements.sort((a, b) => a.index - b.index);
+  return { placements, ends: { left: left.end, right: right.end } };
+}
+
+function boardToScreen(bx, by) {
+  const o = $('board').getBoundingClientRect();
+  return { x: o.left + bx * boardMeta.scale, y: o.top + by * boardMeta.scale };
+}
+
 /* ---------- Drag & drop ---------- */
 function makeDropZones(sides) {
   const zones = [];
-  const board = $('board');
   const wrap = $('board-wrap').getBoundingClientRect();
   const place = (side, x, y) => {
     const z = document.createElement('div');
@@ -211,26 +299,24 @@ function makeDropZones(sides) {
     z.style.top = Math.max(8, Math.min(window.innerHeight - 104, y - half)) + 'px';
     zones.push({ side, el: z, rect: z.getBoundingClientRect() });
   };
-  if (board.children.length === 0) {
+  if (!state.game.board.length) {
     place('left', wrap.left + wrap.width / 2, wrap.top + wrap.height / 2);
   } else {
-    if (sides.includes('left')) {
-      const r = board.children[0].getBoundingClientRect();
-      place('left', r.left - 60, r.top + r.height / 2);
-    }
-    if (sides.includes('right')) {
-      const r = board.children[board.children.length - 1].getBoundingClientRect();
-      place('right', r.right + 60, r.top + r.height / 2);
+    for (const side of ['left', 'right']) {
+      if (!sides.includes(side)) continue;
+      const end = boardMeta.ends[side];
+      if (!end) continue;
+      const p = boardToScreen(end.x + end.dir.x * 70, end.y + end.dir.y * 70);
+      place(side, p.x, p.y);
     }
   }
   return zones;
 }
 
-function inRect(ev, rect, pad = 22) {
-  return (
-    ev.clientX >= rect.left - pad && ev.clientX <= rect.right + pad &&
-    ev.clientY >= rect.top - pad && ev.clientY <= rect.bottom + pad
-  );
+function inRect(ev, rect, pad = 26) {
+  const x = ev.clientX ?? ev.x;
+  const y = ev.clientY ?? ev.y;
+  return x >= rect.left - pad && x <= rect.right + pad && y >= rect.top - pad && y <= rect.bottom + pad;
 }
 
 function attachTileInteraction(el, tileIndex, tile, sides) {
@@ -254,25 +340,40 @@ function attachTileInteraction(el, tileIndex, tile, sides) {
       document.removeEventListener('pointercancel', onUp);
     };
 
+    let raf = null;
+    let pointer = { x: startX, y: startY };
+    let ghostPos = null;
+
+    const follow = () => {
+      if (!ghost) return;
+      // ease toward the pointer for a fluid feel
+      ghostPos.x += (pointer.x - ghostPos.x) * 0.45;
+      ghostPos.y += (pointer.y - ghostPos.y) * 0.45;
+      ghost.style.transform = `translate3d(${ghostPos.x}px, ${ghostPos.y}px, 0) translate(-50%, -50%) scale(1.08) rotate(3deg)`;
+      zones.forEach((z) => z.el.classList.toggle('hot', inRect(pointer, z.rect)));
+      raf = requestAnimationFrame(follow);
+    };
+
     const onMove = (ev) => {
-      if (!dragging && Math.hypot(ev.clientX - startX, ev.clientY - startY) > 8) {
+      pointer = { x: ev.clientX, y: ev.clientY, clientX: ev.clientX, clientY: ev.clientY };
+      if (!dragging && Math.hypot(ev.clientX - startX, ev.clientY - startY) > 6) {
         dragging = true;
         ghost = dominoEl(tile, 'v');
         ghost.classList.add('drag-ghost');
         ghost.style.width = el.offsetWidth + 'px';
         ghost.style.height = el.offsetHeight + 'px';
+        ghost.style.left = '0';
+        ghost.style.top = '0';
         document.body.appendChild(ghost);
+        ghostPos = { x: ev.clientX, y: ev.clientY };
         el.classList.add('drag-source');
         zones = makeDropZones(sides);
-      }
-      if (dragging) {
-        ghost.style.left = ev.clientX + 'px';
-        ghost.style.top = ev.clientY + 'px';
-        zones.forEach((z) => z.el.classList.toggle('hot', inRect(ev, z.rect)));
+        raf = requestAnimationFrame(follow);
       }
     };
 
     const onUp = (ev) => {
+      if (raf) cancelAnimationFrame(raf);
       if (dragging) {
         const hit = zones.find((z) => inRect(ev, z.rect));
         const ghostRect = ghost.getBoundingClientRect();
@@ -511,12 +612,36 @@ function renderGame() {
     seatOfPlayer[pIdx] = el;
   });
 
-  // --- board ---
+  // --- board: snake layout, then zoom so everything fits ---
   const board = $('board');
   board.innerHTML = '';
-  g.board.forEach((tile) => {
-    board.appendChild(dominoEl(tile, tile[0] === tile[1] ? 'v' : 'h'));
-  });
+  const { placements, ends } = layoutBoard(g);
+  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+  for (const pl of placements) {
+    const el = dominoEl(pl.halves, pl.orient);
+    el.style.position = 'absolute';
+    el.style.left = pl.x - pl.w / 2 + 'px';
+    el.style.top = pl.y - pl.h / 2 + 'px';
+    el.style.width = pl.w + 'px';
+    el.style.height = pl.h + 'px';
+    board.appendChild(el);
+    minX = Math.min(minX, pl.x - pl.w / 2); maxX = Math.max(maxX, pl.x + pl.w / 2);
+    minY = Math.min(minY, pl.y - pl.h / 2); maxY = Math.max(maxY, pl.y + pl.h / 2);
+  }
+  let scale = 1;
+  if (placements.length) {
+    const wrap = $('board-wrap').getBoundingClientRect();
+    const pad = 70; // breathing room for drop zones
+    const bw = maxX - minX + pad * 2;
+    const bh = maxY - minY + pad * 2;
+    scale = Math.min(1, wrap.width / bw, wrap.height / bh);
+    const cx = (minX + maxX) / 2;
+    const cy = (minY + maxY) / 2;
+    board.style.transform = `scale(${scale}) translate(${-cx}px, ${-cy}px)`;
+  } else {
+    board.style.transform = 'scale(1)';
+  }
+  boardMeta = { scale, ends };
 
   // round just ended with a played tile -> smack finale; otherwise fly-in
   const justEnded = g.over && !wasOver;
@@ -701,14 +826,15 @@ function runSmackFinale(board, g) {
   // everything else scatters away from the impact point
   const others = [...board.children].filter((el) => el !== newest);
   setTimeout(() => {
+    const k = boardMeta.scale || 1;
     others.forEach((el) => {
       const r = el.getBoundingClientRect();
       const ex = r.left + r.width / 2 - cx;
       const ey = r.top + r.height / 2 - cy;
       const dist = Math.max(40, Math.hypot(ex, ey));
-      const push = 260 + Math.random() * 420;
-      const dx = (ex / dist) * push + (Math.random() - 0.5) * 160;
-      const dy = (ey / dist) * push + (Math.random() - 0.5) * 160;
+      const push = (260 + Math.random() * 420) / k;
+      const dx = (ex / dist) * push + ((Math.random() - 0.5) * 160) / k;
+      const dy = (ey / dist) * push + ((Math.random() - 0.5) * 160) / k;
       const rot = (Math.random() - 0.5) * 1080;
       el.classList.add('scatter');
       el.style.transform = `translate(${dx}px, ${dy}px) rotate(${rot}deg)`;
@@ -720,8 +846,9 @@ function runSmackFinale(board, g) {
 /* FLIP animation: the tile starts where it was played from and flies to its board slot. */
 function flyIn(el, fromRect) {
   const target = el.getBoundingClientRect();
-  const dx = fromRect.left + fromRect.width / 2 - (target.left + target.width / 2);
-  const dy = fromRect.top + fromRect.height / 2 - (target.top + target.height / 2);
+  const k = boardMeta.scale || 1; // tile transforms live in board (scaled) space
+  const dx = (fromRect.left + fromRect.width / 2 - (target.left + target.width / 2)) / k;
+  const dy = (fromRect.top + fromRect.height / 2 - (target.top + target.height / 2)) / k;
   el.style.transform = `translate(${dx}px, ${dy}px) scale(1.15) rotate(8deg)`;
   requestAnimationFrame(() => {
     requestAnimationFrame(() => {

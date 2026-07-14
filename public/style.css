@@ -114,6 +114,8 @@ input[type="text"]:focus { border-color: var(--accent); }
   border: 6px solid var(--table-edge);
   border-radius: 22px;
   overflow: hidden;
+  user-select: none;
+  -webkit-user-select: none;
 }
 
 .back-btn {
@@ -195,13 +197,16 @@ input[type="text"]:focus { border-color: var(--accent); }
 /* ---- Board ---- */
 #board-wrap {
   position: absolute; inset: 90px 110px 170px;
-  display: flex; align-items: center; justify-content: center;
-  overflow: auto;
+  overflow: visible;
 }
 #board {
-  display: flex; align-items: center; flex-wrap: wrap; justify-content: center;
-  gap: 2px;
-  max-width: 100%;
+  /* zero-size anchor at the middle of the play area; tiles are positioned
+     around it and the whole thing scales down as the chain grows */
+  position: absolute; left: 50%; top: 50%;
+  width: 0; height: 0;
+  transform-origin: 0 0;
+  transition: transform .55s cubic-bezier(.25,.8,.3,1);
+  will-change: transform;
 }
 
 /* ---- Bottom seat (me) ---- */
@@ -274,7 +279,7 @@ input[type="text"]:focus { border-color: var(--accent); }
 .hand-tile.drag-source { opacity: .25; }
 .drag-ghost {
   position: fixed; z-index: 60; pointer-events: none;
-  transform: translate(-50%, -50%) scale(1.08) rotate(4deg);
+  will-change: transform;
   filter: drop-shadow(0 14px 18px rgba(0,0,0,.5));
 }
 .drop-zone {

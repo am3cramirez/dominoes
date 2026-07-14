@@ -192,6 +192,7 @@ function startRound(room) {
     capicua: false,
     bonuses: [], // e.g. [{ playerIndex, type: 'pass'|'capicua', points }]
     turnDeadline: null,
+    leftCount: 0, // tiles added to the left of the first tile (board anchor for layout)
   };
   beginTurn(room);
 }
@@ -278,6 +279,7 @@ function doPlay(room, playerIndex, tileIndex, side, auto = false) {
     const oriented = tile[1] === g.leftEnd ? tile : [tile[1], tile[0]];
     g.board.unshift(oriented);
     g.leftEnd = oriented[0];
+    g.leftCount += 1;
   } else {
     const oriented = tile[0] === g.rightEnd ? tile : [tile[1], tile[0]];
     g.board.push(oriented);
@@ -417,6 +419,7 @@ function stateFor(room, playerId) {
     game: g
       ? {
           board: g.board,
+          anchorIndex: g.leftCount,
           leftEnd: g.leftEnd,
           rightEnd: g.rightEnd,
           boneyardCount: g.boneyard.length,
