@@ -296,6 +296,21 @@ input[type="text"]:focus { border-color: var(--accent); }
   transform: scale(1.12); color: #fff;
 }
 
+/* ---- Placement preview (click a tile to see where it lands) ---- */
+.domino.preview {
+  cursor: pointer;
+  opacity: .55;
+  outline: 3px solid var(--accent);
+  box-shadow: 0 0 18px rgba(255,159,28,.7);
+  animation: preview-pulse 1.1s ease-in-out infinite;
+  z-index: 25;
+}
+.domino.preview:hover { opacity: .9; }
+@keyframes preview-pulse {
+  0%, 100% { opacity: .45; }
+  50% { opacity: .78; }
+}
+
 /* ---- Winning smack + table mess ---- */
 @keyframes smack {
   0% { transform: scale(3) rotate(-14deg); opacity: .9; }
@@ -349,7 +364,7 @@ input[type="text"]:focus { border-color: var(--accent); }
 .hand-tile.selected { transform: translateY(-12px); box-shadow: 0 0 0 3px #fff, 0 10px 18px rgba(0,0,0,.45); }
 
 /* tile flying onto the board */
-.domino.flying { transition: transform .45s cubic-bezier(.22,.9,.35,1.1); z-index: 30; }
+.domino.flying { transition: transform .5s cubic-bezier(.2,.8,.25,1); z-index: 30; }
 
 /* ---- Side chooser ---- */
 #side-chooser {
@@ -382,21 +397,30 @@ input[type="text"]:focus { border-color: var(--accent); }
 }
 #tally.hidden { display: none; }
 .tally-card { background: #1c2436; color: #fff; width: min(92vw, 440px); }
-.tally-card h2 { color: var(--accent); margin-bottom: 4px; }
-.tally-card p { color: #aab3c5; margin-bottom: 14px; }
+.tally-card h2 {
+  color: var(--accent); margin-bottom: 0; line-height: 1;
+  font-size: 3.4rem; font-weight: 900; letter-spacing: -.02em;
+  text-shadow: 0 0 24px rgba(255,159,28,.5);
+  animation: tally-points-pop .5s cubic-bezier(.2,1.5,.4,1) both;
+}
+.tally-card p { color: #93a0b6; margin-bottom: 18px; text-transform: uppercase; letter-spacing: .18em; font-size: .72rem; }
 #tally-rows { display: flex; flex-direction: column; gap: 10px; }
 .tally-row {
   display: flex; justify-content: space-between; align-items: baseline;
   padding: 12px 16px; border-radius: 10px; background: rgba(255,255,255,.06);
-  transition: background .3s;
 }
-.tally-row.winner { background: rgba(255,159,28,.18); }
+.tally-row.gained { background: rgba(255,159,28,.16); box-shadow: inset 0 0 0 1px rgba(255,159,28,.35); }
 .tally-row .tr-name { font-weight: 700; font-size: 1rem; }
 .tally-row .tr-score {
-  font-variant-numeric: tabular-nums; font-weight: 800; font-size: 1.6rem; color: var(--accent);
+  font-variant-numeric: tabular-nums; font-weight: 800; font-size: 1.6rem; color: #fff;
+  transition: color .2s;
 }
-.tally-row .tr-tags { font-size: .72rem; color: #ffd39a; margin-top: 2px; }
+.tally-row.gained .tr-score { color: var(--accent); }
+.tally-row .tr-score.counting { text-shadow: 0 0 12px rgba(255,159,28,.8); }
+.tally-row .tr-tags { font-size: .72rem; color: #ffd39a; margin-top: 2px; flex-basis: 100%; }
 @keyframes tally-fade-in { from { opacity: 0; } to { opacity: 1; } }
+@keyframes tally-points-pop { from { opacity: 0; transform: scale(.4); } to { opacity: 1; transform: scale(1); } }
+@keyframes tally-row-in { from { opacity: 0; transform: translateY(14px); } to { opacity: 1; transform: translateY(0); } }
 
 /* ---- Toasts ---- */
 #toasts {
@@ -410,6 +434,18 @@ input[type="text"]:focus { border-color: var(--accent); }
   animation: toast-in .25s ease;
 }
 @keyframes toast-in { from { opacity: 0; transform: translateY(-8px); } to { opacity: 1; } }
+
+/* ---- "X starts" toast, anchored above a player's seat ---- */
+.starter-toast {
+  position: fixed; z-index: 90; pointer-events: none;
+  background: var(--accent); color: #fff; font-weight: 800; font-size: .82rem;
+  padding: 6px 14px; border-radius: 20px; white-space: nowrap;
+  box-shadow: 0 6px 16px rgba(0,0,0,.45);
+  animation: starter-pop .3s cubic-bezier(.2,1.4,.4,1) both;
+  transition: opacity .35s ease, transform .35s ease;
+}
+.starter-toast.leaving { opacity: 0; transform: translateY(-6px); }
+@keyframes starter-pop { from { opacity: 0; transform: scale(.6); } to { opacity: 1; transform: scale(1); } }
 
 @media (max-width: 700px) {
   #board-wrap { inset: 80px 70px 150px; }

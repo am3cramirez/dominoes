@@ -208,6 +208,8 @@ function startRound(room) {
     rightEnd: null,
     boneyard,
     turn: starter,
+    starter, // who opens this round (for the "X starts" announcement)
+    roundId: (room.roundCounter = (room.roundCounter || 0) + 1),
     passes: 0,
     over: false,
     roundWinner: null,
@@ -372,8 +374,15 @@ function doPass(room, playerIndex, auto = false) {
     g.openingBonusPending = null;
   }
 
-  // Pass-around bonus: everyone else skipped after the last tile played.
-  if (!g.over && g.passes === room.players.length - 1 && g.lastTilePlayer !== null) {
+  // Pass-around bonus: everyone else skipped after your tile AND you can still
+  // play (so the game keeps going). If it comes back to you and you're stuck
+  // too, that's a locked game — no bonus is awarded for locking it.
+  if (
+    !g.over &&
+    g.passes === room.players.length - 1 &&
+    g.lastTilePlayer !== null &&
+    handHasPlayable(room.players[g.lastTilePlayer].hand, g)
+  ) {
     awardPoints(room, g.lastTilePlayer, PASS_BONUS);
     g.bonuses.push({ playerIndex: g.lastTilePlayer, type: 'pass', points: PASS_BONUS });
     io.to(room.code).emit('bonus', {
@@ -448,29 +457,22 @@ function endRound(room, winnerIndex, blocked) {
 function checkBlocked(room) {
   const g = room.game;
   if (g.passes < room.players.length) return;
-  // Everyone passed consecutively -> blocked. Lowest pip count wins (tie -> no winner).
-  // With teams, compare combined team pip counts.
-  const sums = room.players.map((p) => pipSum(p.hand));
-  let best = [];
-  if (teamsEnabled(room)) {
-    const teamSum = [0, 1].map((t) =>
-      sums.reduce((s, v, i) => (teamOf(room, i) === t ? s + v : s), 0)
-    );
-    if (teamSum[0] !== teamSum[1]) {
-      const winningTeam = teamSum[0] < teamSum[1] ? 0 : 1;
-      // credit the round to that team's player with the lightest hand
-      best = room.players
-        .map((_, i) => i)
-        .filter((i) => teamOf(room, i) === winningTeam)
-        .sort((a, b) => sums[a] - sums[b])
-        .slice(0, 1);
-    }
-  } else {
-    const min = Math.min(...sums);
-    best = sums.map((s, i) => (s === min ? i : -1)).filter((i) => i >= 0);
-    if (best.length > 1) best = [];
+  // Game is locked (everyone passed in a row). The round goes to whichever of
+  // just TWO players holds the lighter hand: the one who locked it (played the
+  // last tile) and the player who sits immediately after them. Everyone else's
+  // hand is irrelevant. Equal pips between the two -> no winner (tie).
+  const n = room.players.length;
+  const locker = g.lastTilePlayer;
+  let winner = null;
+  if (locker !== null && locker !== undefined) {
+    const next = (locker + 1) % n;
+    const a = pipSum(room.players[locker].hand);
+    const b = pipSum(room.players[next].hand);
+    if (a < b) winner = locker;
+    else if (b < a) winner = next;
+    // a === b -> tie, winner stays null
   }
-  endRound(room, best.length === 1 ? best[0] : null, true);
+  endRound(room, winner, true);
 }
 
 /** Build the state payload one player is allowed to see. */
@@ -502,11 +504,14 @@ function stateFor(room, playerId) {
           rightEnd: g.rightEnd,
           boneyardCount: g.boneyard.length,
           turn: g.turn,
+          starter: g.starter,
+          roundId: g.roundId,
           over: g.over,
           blocked: g.blocked,
           roundWinner: g.roundWinner,
           roundPoints: g.roundPoints,
           matchWinner: g.matchWinner,
+          lastTilePlayer: g.lastTilePlayer,
           capicua: g.capicua,
           bonuses: g.bonuses,
           turnDeadline: g.turnDeadline,

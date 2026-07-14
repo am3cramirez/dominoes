@@ -12,6 +12,7 @@ let wasOver = false; // detects the round-end transition for the smack finale
 let overlayHoldUntil = 0; // keep the tally hidden while the smack finale plays
 let lastLiveScores = null; // scores from the moment before the round ended (tally "from" values)
 let tallyTriggeredForRound = false; // guards runTally() to once per round-over transition
+let lastRoundId = null; // detects a fresh round so we announce its starter once
 
 function show(name) {
   Object.values(screens).forEach((s) => s.classList.remove('active'));
@@ -159,6 +160,7 @@ function leaveRoom() {
   wasOver = false;
   lastLiveScores = null;
   tallyTriggeredForRound = false;
+  lastRoundId = null;
   $('tally').classList.add('hidden');
   $('overlay').classList.add('hidden');
   show('home');
@@ -167,22 +169,12 @@ function leaveRoom() {
 $('btn-next-round').onclick = () => socket.emit('startGame', (res) => res?.error && toast(res.error));
 $('btn-back-home').onclick = leaveRoom;
 
-const sideChooser = $('side-chooser');
-sideChooser.querySelectorAll('button').forEach((b) => {
-  b.onclick = () => {
-    if (selectedTileIndex !== null) playTile(selectedTileIndex, b.dataset.side);
-    hideSideChooser();
-  };
-});
-document.addEventListener('click', (e) => {
-  if (!sideChooser.classList.contains('hidden') && !sideChooser.contains(e.target)) hideSideChooser();
+// Clicking away from a hand tile or its placement ghosts cancels the preview.
+document.addEventListener('pointerdown', (e) => {
+  if (selectedTileIndex === null) return;
+  if (e.target.closest('.hand-tile') || e.target.closest('.domino.preview')) return;
+  clearPreview();
 }, true);
-
-function hideSideChooser() {
-  sideChooser.classList.add('hidden');
-  selectedTileIndex = null;
-  render();
-}
 
 function playTile(tileIndex, side) {
   socket.emit('playTile', { tileIndex, side }, (res) => {
@@ -233,32 +225,38 @@ function layoutBoard(g) {
     return { x: cx, y: cy, w, h, orient, halves };
   };
 
+  // `p` is the open connection point at the current end of this arm; tiles are
+  // laid centre-first along `d`. At a bend we simply rotate `d` and keep laying
+  // from the same point, so the turning tile meets the row's end at a clean
+  // right-angle (an L touching at the corner) instead of being nudged sideways.
   const walk = (indices, nearOf, farOf, start, dir) => {
     let px = start, py = 0, d = dir;
     let turns = 0;
     const out = [];
     for (const i of indices) {
       const tile = g.board[i];
-      const len = (tile[0] === tile[1] ? U : LONG) + GAP;
-      // shrink the box a little on every bend so laps spiral inward;
-      // only the axis of travel is checked, so a fresh turn can't re-trigger
-      const bx = SNAKE_X - turns * (U + 10);
-      const by = SNAKE_Y - turns * (U + 10);
-      let ex = px + d.x * len;
-      let ey = py + d.y * len;
-      if ((d.x !== 0 && Math.abs(ex) > bx) || (d.y !== 0 && Math.abs(ey) > by)) {
-        // L-corner: step past the previous tile's end so the turning tile
-        // sits flush beside it instead of overlapping it
-        const across = (tile[0] === tile[1] ? LONG : U) / 2 + GAP;
-        px += d.x * across;
-        py += d.y * across;
+      const isD = tile[0] === tile[1];
+      const along = isD ? U : LONG; // extent along travel
+      const cross = isD ? LONG : U; // extent across travel
+      const step = along + GAP;
+      // Spiral inward a little each full pair of turns so long chains keep
+      // fitting; only the axis of travel gates the bend.
+      const bx = SNAKE_X - Math.floor(turns / 2) * (LONG + GAP);
+      const by = SNAKE_Y - Math.floor(turns / 2) * (LONG + GAP);
+      if ((d.x !== 0 && Math.abs(px + d.x * step) > bx) ||
+          (d.y !== 0 && Math.abs(py + d.y * step) > by)) {
+        // Bend: step past the previous tile's end (by half the turning tile's
+        // cross-width) so the corner tile clears it, then rotate 90°.
+        px += d.x * (cross / 2 + GAP);
+        py += d.y * (cross / 2 + GAP);
         d = rot(d);
         turns++;
-        ex = px + d.x * len;
-        ey = py + d.y * len;
       }
-      out.push({ index: i, dir: d, ...mk(tile, nearOf(tile), farOf(tile), (px + ex) / 2, (py + ey) / 2, d) });
-      px = ex; py = ey;
+      const cx = px + d.x * (along / 2);
+      const cy = py + d.y * (along / 2);
+      out.push({ index: i, dir: d, ...mk(tile, nearOf(tile), farOf(tile), cx, cy, d) });
+      px += d.x * step;
+      py += d.y * step;
     }
     return { out, end: { x: px, y: py, dir: d } };
   };
@@ -392,7 +390,9 @@ function attachTileInteraction(el, tileIndex, tile, sides) {
         }
       } else {
         cleanup();
-        tapPlay(el, tileIndex, sides);
+        // A click (no drag) toggles a placement preview instead of playing.
+        if (selectedTileIndex === tileIndex) clearPreview();
+        else showPreview(tileIndex, tile, sides, el);
       }
     };
 
@@ -402,20 +402,64 @@ function attachTileInteraction(el, tileIndex, tile, sides) {
   };
 }
 
-function tapPlay(el, tileIndex, sides) {
-  const rect = el.getBoundingClientRect();
-  if (sides.length === 1 || state.game.board.length === 0) {
-    pendingHandRect = rect;
-    playTile(tileIndex, sides[0]);
+/* Work out exactly where `tile` would land on a given side, by running the
+   real layout over a hypothetical board with the tile appended. Returns the
+   placement (board coords) of the new tile, matching the eventual position. */
+function predictPlacement(side, tile) {
+  const g = state.game;
+  let board, anchorIndex, newIndex;
+  if (g.board.length === 0) {
+    board = [tile.slice()];
+    anchorIndex = 0;
+    newIndex = 0;
+  } else if (side === 'left') {
+    const oriented = tile[1] === g.leftEnd ? tile.slice() : [tile[1], tile[0]];
+    board = [oriented, ...g.board];
+    anchorIndex = (g.anchorIndex ?? 0) + 1;
+    newIndex = 0;
   } else {
-    selectedTileIndex = tileIndex;
-    pendingHandRect = rect;
-    el.classList.add('selected');
-    sideChooser.classList.remove('hidden');
-    const cw = sideChooser.offsetWidth;
-    sideChooser.style.left = Math.max(8, Math.min(window.innerWidth - cw - 8, rect.left + rect.width / 2 - cw / 2)) + 'px';
-    sideChooser.style.top = rect.top - 60 + 'px';
+    const oriented = tile[0] === g.rightEnd ? tile.slice() : [tile[1], tile[0]];
+    board = [...g.board, oriented];
+    anchorIndex = g.anchorIndex ?? 0;
+    newIndex = board.length - 1;
   }
+  const { placements } = layoutBoard({ board, anchorIndex });
+  return placements.find((p) => p.index === newIndex);
+}
+
+/* Show a translucent ghost of the tile at each valid end. Clicking a ghost
+   commits the play; clicking the tile again (or anywhere else) cancels. */
+function showPreview(tileIndex, tile, sides, handEl) {
+  clearPreview();
+  selectedTileIndex = tileIndex;
+  if (handEl) handEl.classList.add('selected');
+  const board = $('board');
+  for (const side of sides) {
+    const pl = predictPlacement(side, tile);
+    if (!pl) continue;
+    const ghost = dominoEl(pl.halves, pl.orient);
+    ghost.classList.add('preview');
+    ghost.style.position = 'absolute';
+    ghost.style.left = pl.x - pl.w / 2 + 'px';
+    ghost.style.top = pl.y - pl.h / 2 + 'px';
+    ghost.style.width = pl.w + 'px';
+    ghost.style.height = pl.h + 'px';
+    ghost.onpointerdown = (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      pendingHandRect = handEl ? handEl.getBoundingClientRect() : null;
+      const idx = selectedTileIndex;
+      clearPreview();
+      playTile(idx, side);
+    };
+    board.appendChild(ghost);
+  }
+}
+
+function clearPreview() {
+  document.querySelectorAll('#board .domino.preview').forEach((el) => el.remove());
+  document.querySelectorAll('.hand-tile.selected').forEach((el) => el.classList.remove('selected'));
+  selectedTileIndex = null;
 }
 
 /* ---------- Countdown bars & auto-start timers ---------- */
@@ -608,6 +652,8 @@ function renderGame() {
   const g = state.game;
   const me = state.players[state.youIndex];
   const myTurn = g.turn === state.youIndex && !g.over;
+  // A fresh state rebuilds the board, so any open placement preview is stale.
+  selectedTileIndex = null;
 
   $('game-code').textContent = state.code;
   $('boneyard-count').textContent = g.boneyardCount;
@@ -630,6 +676,16 @@ function renderGame() {
     buildSeat(el, state.players[pIdx], pIdx, g);
     seatOfPlayer[pIdx] = el;
   });
+
+  // Announce who opens each new round with a little toast above their seat.
+  if (g.roundId !== lastRoundId) {
+    lastRoundId = g.roundId;
+    if (!g.over && g.starter !== undefined && g.starter !== null) {
+      const anchor = g.starter === state.youIndex ? $('my-seat') : seatOfPlayer[g.starter];
+      // seat rects aren't final until layout settles this frame
+      requestAnimationFrame(() => showStarterToast(g.starter, anchor));
+    }
+  }
 
   // --- board: snake layout, then zoom so everything fits ---
   const board = $('board');
@@ -730,7 +786,7 @@ function renderGame() {
   if (!g.over) {
     if (g.turn === state.youIndex) {
       label = anyPlayable
-        ? 'Your turn — drag a tile onto the board'
+        ? 'Your turn — tap a tile to preview, or drag it onto the board'
         : g.boneyardCount > 0 ? 'No play — drawing for you…' : 'No play — passing…';
     } else {
       const cur = state.players[g.turn];
@@ -799,25 +855,21 @@ function runTally(g) {
   const winnerIdx = isMatchOver ? g.matchWinner : g.roundWinner;
   const rows = buildScoreRows(g, winnerIdx).sort((a, b) => b.to - a.to);
 
-  const winnerRow = rows.find((r) => r.winner);
-  $('tally-title').textContent = isMatchOver
-    ? `🏆 ${winnerRow?.label ?? ''} wins the match!`
-    : g.blocked
-      ? winnerRow ? `Blocked — ${winnerRow.label} takes it` : 'Blocked — tie round'
-      : winnerRow ? `${winnerRow.label} wins the round!` : 'Round over';
-  $('tally-sub').textContent = g.blocked
-    ? 'Fewest remaining pips wins the round.'
-    : g.roundWinner !== null ? 'All remaining pips collected:' : '';
+  // No "so-and-so won the round" — just how many points were scored.
+  const pts = g.roundPoints || 0;
+  $('tally-title').textContent = pts > 0 ? `+${pts}` : g.blocked ? 'Locked' : '—';
+  $('tally-sub').textContent = pts > 0 ? 'points' : g.blocked ? 'no score this round' : '';
 
   const rowsEl = $('tally-rows');
   rowsEl.innerHTML = '';
-  const D_ANIM = 1100;
-  const STAGGER = 150;
-  const HOLD = 1000;
+  const D_ANIM = 900;
+  const STAGGER = 120;
+  const HOLD = 850;
   rows.forEach((r, i) => {
     const from = lastLiveScores?.[r.repIdx] ?? r.to;
     const el = document.createElement('div');
-    el.className = 'tally-row' + (r.winner ? ' winner' : '');
+    el.className = 'tally-row' + (r.to > from ? ' gained' : '');
+    el.style.animation = `tally-row-in .4s ${i * STAGGER}ms both cubic-bezier(.2,.9,.3,1.1)`;
     const nameEl = document.createElement('span');
     nameEl.className = 'tr-name';
     nameEl.textContent = r.label;
@@ -833,22 +885,44 @@ function runTally(g) {
     }
     rowsEl.appendChild(el);
 
-    const start = performance.now() + i * STAGGER;
-    const step = (now) => {
-      const t = Math.max(0, Math.min(1, (now - start) / D_ANIM));
-      const eased = 1 - Math.pow(1 - t, 3);
-      scoreEl.textContent = Math.round(from + (r.to - from) * eased);
-      if (t < 1) requestAnimationFrame(step);
-    };
-    requestAnimationFrame(step);
+    if (r.to !== from) {
+      const start = performance.now() + i * STAGGER + 250; // start after the row slides in
+      const step = (now) => {
+        const t = Math.max(0, Math.min(1, (now - start) / D_ANIM));
+        const eased = 1 - Math.pow(1 - t, 3);
+        scoreEl.textContent = Math.round(from + (r.to - from) * eased);
+        if (t >= 1) scoreEl.classList.remove('counting');
+        else requestAnimationFrame(step);
+      };
+      scoreEl.classList.add('counting');
+      requestAnimationFrame(step);
+    }
   });
 
   $('tally').classList.remove('hidden');
-  const totalMs = (rows.length - 1) * STAGGER + D_ANIM + HOLD;
+  const totalMs = (rows.length - 1) * STAGGER + 250 + D_ANIM + HOLD;
   setTimeout(() => {
     $('tally').classList.add('hidden');
     if (isMatchOver && state?.game?.over) renderOverlay(state.game);
   }, totalMs);
+}
+
+function showStarterToast(starterIndex, anchor) {
+  const name = state.players[starterIndex]?.name;
+  if (!name || !anchor) return;
+  const r = anchor.getBoundingClientRect();
+  const t = document.createElement('div');
+  t.className = 'starter-toast';
+  t.textContent = `${name} starts`;
+  document.body.appendChild(t);
+  const tw = t.offsetWidth;
+  const left = Math.max(8, Math.min(window.innerWidth - tw - 8, r.left + r.width / 2 - tw / 2));
+  t.style.left = left + 'px';
+  // above the seat, except the top seat where we drop it just below
+  const isTop = anchor.id === 'seat-top';
+  t.style.top = (isTop ? r.bottom + 10 : r.top - 42) + 'px';
+  setTimeout(() => t.classList.add('leaving'), 1900);
+  setTimeout(() => t.remove(), 2300);
 }
 
 function newestTileEl(board, g) {
@@ -926,7 +1000,7 @@ function flyIn(el, fromRect) {
   const k = boardMeta.scale || 1; // tile transforms live in board (scaled) space
   const dx = (fromRect.left + fromRect.width / 2 - (target.left + target.width / 2)) / k;
   const dy = (fromRect.top + fromRect.height / 2 - (target.top + target.height / 2)) / k;
-  el.style.transform = `translate(${dx}px, ${dy}px) scale(1.15) rotate(8deg)`;
+  el.style.transform = `translate(${dx}px, ${dy}px) scale(1.06)`;
   requestAnimationFrame(() => {
     requestAnimationFrame(() => {
       el.classList.add('flying');

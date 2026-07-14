@@ -10,13 +10,13 @@ An online multiplayer dominoes game (draw variant) inspired by dominoes.playdrif
 - **Lobby countdown** — press Start with as few as 1 player to open a 25s join window; every join resets it, and empty seats fill with CPU-controlled players when it expires
 - **Scoring across rounds** — round winner collects ALL remaining pips on the table; first to 200 wins the match
 - **Team play** — with exactly 4 players it's partner dominoes (seats 1&3 vs 2&4, all 28 tiles dealt, no boneyard); points go to the team
-- **Bonuses** — +25 when everyone passes after your tile (pass-around), +25 when your winning tile fits both open ends (capicúa), +25 when your round-opening tile shuts out the very next opponent while your partner can still play (opening block)
-- **Blocked-game handling** — fewest remaining pips wins when nobody can move (team totals in team play)
-- **Drag & drop** — drag tiles from your hand onto the board's drop zones (tap still works)
-- **Anchored snake board** — the chain bends at the table edges like a real layout, and the whole board zooms out smoothly to keep everything in view as it grows
+- **Bonuses** — +25 when everyone passes after your tile and you can still play (pass-around), +25 when your winning tile fits both open ends (capicúa), +25 when your round-opening tile shuts out the very next opponent while your partner can still play (opening block). No bonus is ever awarded on the move that locks the game
+- **Locked-game handling** — when nobody can move, the round goes to whichever of just two players holds the lighter hand: the one who locked it (played the last tile) and the player immediately after them. Equal pips → tie, no score
+- **Click-to-place or drag** — tap a tile to preview where it lands (a highlighted ghost at each valid end), then tap the ghost to confirm; or drag it straight onto the board
+- **Anchored snake board** — the chain bends cleanly at the table edges like a real layout, and the whole board zooms out smoothly to keep everything in view as it grows
 - **15-second turn timer** — visible countdown; when it runs out the CPU plays a valid tile for you. CPU-filled seats move in ~1.3s
 - **Automatic draw/pass** — no playable tile? The server draws (or passes) for you, no buttons to click
-- **Celebrations** — big banner when a bonus lands; the winning tile smacks the table and scatters the whole line; round results appear as a high-score-style tally that counts up and auto-advances to the next round — no "Next Round" click
+- **Round flow** — a toast announces who opens each round above their seat; when a round ends, a high-score-style tally shows the points scored (counting up) and the next round deals itself automatically — no "Next Round" click
 - **Reconnect support** — drop mid-game and rejoin with the same name and room code; host can remove players who don't come back
 - Mobile-friendly UI with tile animations, turn indicators, and live opponent tile counts
 
