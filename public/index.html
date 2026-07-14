@@ -15,8 +15,10 @@
       <h1>🁣 Dominoes</h1>
       <p class="tagline">Play dominoes online with friends</p>
       <input id="name-input" type="text" maxlength="20" placeholder="Your name" autocomplete="off" />
-      <button id="btn-create" class="btn primary">Create Room</button>
-      <div class="divider"><span>or join a room</span></div>
+      <button id="btn-quick" class="btn primary">▶ Play Now</button>
+      <p class="hint">Jump into an open table with other players</p>
+      <div class="divider"><span>or play with friends</span></div>
+      <button id="btn-create" class="btn">Create Private Room</button>
       <div class="join-row">
         <input id="code-input" type="text" maxlength="5" placeholder="CODE" autocomplete="off" />
         <button id="btn-join" class="btn">Join</button>
@@ -33,7 +35,8 @@
         <span id="lobby-code">—</span>
         <button id="btn-copy" class="btn small" title="Copy code">Copy</button>
       </div>
-      <p class="hint">Share this code — friends enter it on the home screen to join. 2–4 players.</p>
+      <p id="lobby-visibility" class="hint"></p>
+      <p id="lobby-countdown" class="countdown"></p>
       <ul id="lobby-players" class="player-list"></ul>
       <button id="btn-start" class="btn primary">Start Game</button>
       <p id="lobby-hint" class="hint"></p>
@@ -86,6 +89,7 @@
         <h2 id="overlay-title"></h2>
         <p id="overlay-sub"></p>
         <div id="overlay-scores"></div>
+        <p id="overlay-auto" class="countdown"></p>
         <button id="btn-next-round" class="btn primary">Next Round</button>
         <button id="btn-back-home" class="btn ghost">Back to Home</button>
       </div>

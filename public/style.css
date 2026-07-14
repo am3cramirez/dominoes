@@ -84,6 +84,7 @@ input[type="text"]:focus { border-color: var(--accent); }
 .join-row input { flex: 1; margin-bottom: 0; }
 
 .error { color: #d33; min-height: 1.2em; margin-top: 10px; font-size: .9rem; }
+.countdown { color: var(--accent-dark); font-weight: 700; min-height: 1.3em; margin: 6px 0; }
 .hint { color: #778; font-size: .85rem; margin: 10px 0; }
 
 /* ---- Lobby ---- */

@@ -102,8 +102,15 @@ function avatarEl(playerIndex) {
 }
 
 /* ---------- Home ---------- */
+$('btn-quick').onclick = () => {
+  socket.emit('quickPlay', { name: $('name-input').value }, (res) => {
+    if (res.error) return ($('home-error').textContent = res.error);
+    $('home-error').textContent = '';
+  });
+};
+
 $('btn-create').onclick = () => {
-  socket.emit('createRoom', { name: $('name-input').value }, (res) => {
+  socket.emit('createRoom', { name: $('name-input').value, isPublic: false }, (res) => {
     if (res.error) return ($('home-error').textContent = res.error);
     $('home-error').textContent = '';
   });
@@ -304,7 +311,7 @@ function tapPlay(el, tileIndex, sides) {
   }
 }
 
-/* ---------- Countdown bars ---------- */
+/* ---------- Countdown bars & auto-start timers ---------- */
 (function tickTimer() {
   const g = state?.game;
   if (g && !g.over && g.turnDeadline) {
@@ -315,6 +322,11 @@ function tapPlay(el, tileIndex, sides) {
       bar.style.transform = `scaleX(${frac})`;
     });
   }
+  const secs = state?.autoStartAt
+    ? Math.max(0, Math.ceil((state.autoStartAt - Date.now()) / 1000))
+    : null;
+  $('lobby-countdown').textContent = secs !== null && !state.game ? `Starting in ${secs}s…` : '';
+  $('overlay-auto').textContent = secs !== null && state?.game?.over ? `Next round in ${secs}s…` : '';
   requestAnimationFrame(tickTimer);
 })();
 
@@ -397,12 +409,18 @@ function renderLobby() {
     list.appendChild(li);
   });
 
+  $('lobby-visibility').textContent = state.isPublic
+    ? 'Public table — anyone can join, or invite friends with the code above.'
+    : 'Private room — share this code so friends can join. 2–4 players.';
+
   const meHost = state.players[state.youIndex]?.isHost;
   $('btn-start').style.display = meHost ? '' : 'none';
   $('btn-start').disabled = state.players.length < 2;
   let hint = meHost
     ? state.players.length < 2 ? 'Waiting for at least one more player…' : 'Ready when you are!'
-    : 'Waiting for the host to start the game…';
+    : state.isPublic
+      ? 'The game starts automatically…'
+      : 'Waiting for the host to start the game…';
   if (state.players.length === 4) {
     const t0 = state.players.filter((p) => p.team === 0).map((p) => p.name).join(' & ');
     const t1 = state.players.filter((p) => p.team === 1).map((p) => p.name).join(' & ');

@@ -18,6 +18,8 @@ const PASS_BONUS = 25; // everyone skips after your tile
 const CAPICUA_BONUS = 25; // winning tile fits both ends
 const TURN_MS = Number(process.env.TURN_MS) || 15000; // time to play before the CPU plays for you
 const AUTO_DELAY = Number(process.env.AUTO_DELAY_MS) || 900; // pause before automatic draws/passes so players can follow
+const AUTO_START_MS = Number(process.env.AUTO_START_MS) || 10000; // public lobby countdown once 2+ players
+const NEXT_ROUND_MS = Number(process.env.NEXT_ROUND_MS) || 8000; // pause between rounds in public rooms
 const ROOM_TTL_MS = 1000 * 60 * 60; // sweep rooms idle for an hour
 
 /** rooms: code -> room */
@@ -85,18 +87,64 @@ function handHasPlayable(hand, game) {
   return hand.some((t) => tilePlayableSides(t, game).length > 0);
 }
 
-function createRoom(hostSocket, name) {
+function createRoom(hostSocket, name, isPublic) {
   const code = makeRoomCode();
   const room = {
     code,
+    isPublic: !!isPublic,
     hostId: hostSocket.id,
     players: [], // { id, name, connected, hand: [], score }
     game: null,
+    autoStartAt: null,
     lastActivity: Date.now(),
   };
   rooms.set(code, room);
   addPlayer(room, hostSocket, name);
   return room;
+}
+
+/** Deal a new round if the room is in a startable state. Returns true if started. */
+function tryStartRound(room) {
+  if (room.game && !room.game.over) return false;
+  clearLobbyTimer(room);
+  // Drop seats that never came back before dealing a fresh round.
+  room.players = room.players.filter((p) => p.connected);
+  if (room.players.length < MIN_PLAYERS) return false;
+  // New match if the previous one finished.
+  if (room.game && room.game.matchWinner !== null && room.game.matchWinner !== undefined) {
+    for (const p of room.players) p.score = 0;
+  }
+  startRound(room);
+  return true;
+}
+
+function clearLobbyTimer(room) {
+  if (room.lobbyTimer) clearTimeout(room.lobbyTimer);
+  room.lobbyTimer = null;
+  room.autoStartAt = null;
+}
+
+/** Public rooms start themselves: instantly when full, on a short countdown at 2+. */
+function maybeAutoStart(room, delay = AUTO_START_MS) {
+  if (!room.isPublic) return;
+  if (room.game && !room.game.over) return;
+  const n = room.players.filter((p) => p.connected).length;
+  if (n < MIN_PLAYERS) {
+    clearLobbyTimer(room);
+    return;
+  }
+  if (n >= MAX_PLAYERS) {
+    tryStartRound(room);
+    return;
+  }
+  clearLobbyTimer(room);
+  room.autoStartAt = Date.now() + delay;
+  room.lobbyTimer = setTimeout(() => {
+    room.lobbyTimer = null;
+    room.autoStartAt = null;
+    tryStartRound(room);
+    broadcast(room);
+  }, delay);
 }
 
 function addPlayer(room, socket, name) {
@@ -290,6 +338,7 @@ function endRound(room, winnerIndex, blocked) {
   const g = room.game;
   clearTimers(room);
   g.over = true;
+  if (room.isPublic) maybeAutoStart(room, NEXT_ROUND_MS);
   g.blocked = blocked;
   g.roundWinner = winnerIndex;
   if (winnerIndex !== null) {
@@ -350,6 +399,8 @@ function stateFor(room, playerId) {
   const meIndex = room.players.findIndex((p) => p.id === playerId);
   return {
     code: room.code,
+    isPublic: room.isPublic,
+    autoStartAt: room.autoStartAt,
     hostId: room.hostId,
     youIndex: meIndex,
     teams: teamsEnabled(room),
@@ -402,12 +453,37 @@ function getRoomAndPlayer(socket) {
 }
 
 io.on('connection', (socket) => {
-  socket.on('createRoom', ({ name }, cb) => {
+  socket.on('createRoom', ({ name, isPublic }, cb) => {
     name = String(name || '').trim().slice(0, 20);
     if (!name) return cb({ error: 'Enter a name first.' });
-    const room = createRoom(socket, name);
+    const room = createRoom(socket, name, isPublic);
     cb({ ok: true, code: room.code });
     broadcast(room);
+  });
+
+  // Matchmaking: hop into the fullest open public room, or open a new one.
+  socket.on('quickPlay', ({ name }, cb) => {
+    name = String(name || '').trim().slice(0, 20);
+    if (!name) return cb({ error: 'Enter a name first.' });
+    let best = null;
+    for (const room of rooms.values()) {
+      if (!room.isPublic) continue;
+      if (room.game && !room.game.over) continue;
+      if (room.players.length >= MAX_PLAYERS) continue;
+      if (room.players.some((p) => p.name.toLowerCase() === name.toLowerCase())) continue;
+      if (!best || room.players.length > best.players.length) best = room;
+    }
+    if (best) {
+      addPlayer(best, socket, name);
+      cb({ ok: true, code: best.code });
+      io.to(best.code).emit('toast', `${name} joined the room`);
+      maybeAutoStart(best);
+      broadcast(best);
+    } else {
+      const room = createRoom(socket, name, true);
+      cb({ ok: true, code: room.code });
+      broadcast(room);
+    }
   });
 
   socket.on('joinRoom', ({ name, code }, cb) => {
@@ -439,6 +515,7 @@ io.on('connection', (socket) => {
     addPlayer(room, socket, name);
     cb({ ok: true, code: room.code });
     io.to(room.code).emit('toast', `${name} joined the room`);
+    maybeAutoStart(room);
     broadcast(room);
   });
 
@@ -447,15 +524,7 @@ io.on('connection', (socket) => {
     if (!room) return cb?.({ error: 'Not in a room.' });
     if (socket.id !== room.hostId) return cb?.({ error: 'Only the host can start.' });
     if (room.game && !room.game.over) return cb?.({ error: 'Game already running.' });
-    const connected = room.players.filter((p) => p.connected);
-    if (connected.length < MIN_PLAYERS) return cb?.({ error: 'Need at least 2 players.' });
-    // Drop seats that never came back before dealing a fresh round.
-    room.players = room.players.filter((p) => p.connected);
-    // New match if previous one finished.
-    if (room.game && room.game.matchWinner !== null && room.game.matchWinner !== undefined) {
-      for (const p of room.players) p.score = 0;
-    }
-    startRound(room);
+    if (!tryStartRound(room)) return cb?.({ error: 'Need at least 2 players.' });
     cb?.({ ok: true });
     broadcast(room);
   });
@@ -489,6 +558,7 @@ io.on('connection', (socket) => {
     cb?.({ ok: true });
     if (room.players.length === 0) {
       clearTimers(room);
+      clearLobbyTimer(room);
       rooms.delete(room.code);
       return;
     }
@@ -535,8 +605,12 @@ function handleLeave(socket, explicit) {
 
   if (room.players.length === 0) {
     clearTimers(room);
+    clearLobbyTimer(room);
     rooms.delete(room.code);
     return;
+  }
+  if (room.isPublic && room.players.filter((p) => p.connected).length < MIN_PLAYERS) {
+    clearLobbyTimer(room);
   }
   if (!room.players.some((p) => p.id === room.hostId)) {
     const newHost = room.players.find((p) => p.connected) || room.players[0];
@@ -554,6 +628,7 @@ setInterval(() => {
   for (const [code, room] of rooms) {
     if (now - room.lastActivity > ROOM_TTL_MS) {
       clearTimers(room);
+      clearLobbyTimer(room);
       rooms.delete(code);
     }
   }
