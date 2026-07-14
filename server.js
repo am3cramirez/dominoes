@@ -13,14 +13,14 @@ const PORT = process.env.PORT || 3000;
 const MAX_PLAYERS = 4;
 const MIN_PLAYERS = 2;
 const HAND_SIZE = 7;
-const TARGET_SCORE = 200;
+const TARGET_SCORE = Number(process.env.TARGET_SCORE) || 200;
 const PASS_BONUS = 25; // everyone skips after your tile
 const CAPICUA_BONUS = 25; // winning tile fits both ends
 const TURN_MS = Number(process.env.TURN_MS) || 15000; // time to play before the CPU plays for you
 const AUTO_DELAY = Number(process.env.AUTO_DELAY_MS) || 900; // pause before automatic draws/passes so players can follow
 const LOBBY_COUNTDOWN_MS = Number(process.env.LOBBY_COUNTDOWN_MS) || 25000; // join window after host presses Start
 const BOT_MOVE_MS = Number(process.env.BOT_MOVE_MS) || 1300; // CPU-filled players "think" this long per turn
-const ROUND_TALLY_MS = Number(process.env.ROUND_TALLY_MS) || 3200; // gap before the next round auto-deals
+const ROUND_TALLY_MS = Number(process.env.ROUND_TALLY_MS) || 4200; // gap before the next round auto-deals (tally count-up + ~2s hold)
 const BLOCKED_REVEAL_MS = Number(process.env.BLOCKED_REVEAL_MS) || 7000; // longer hold to reveal hands on a locked game
 const OPENING_BLOCK_BONUS = 25; // round-opening tile shuts out the next opponent, but not their partner too
 const ROOM_TTL_MS = 1000 * 60 * 60; // sweep rooms idle for an hour
@@ -76,6 +76,15 @@ function teammates(room, playerIndex) {
 /* Points always go to the whole team (just the player when no teams). */
 function awardPoints(room, playerIndex, pts) {
   for (const i of teammates(room, playerIndex)) room.players[i].score += pts;
+}
+
+/* The +25 pass-around and opening-block bonuses may never carry a team across
+ * the target — you can't win the match on one. If it would reach/exceed the
+ * target it's announced but the points don't count. Returns true if awarded. */
+function awardBonusPoints(room, playerIndex, pts) {
+  if (room.players[playerIndex].score + pts >= TARGET_SCORE) return false;
+  awardPoints(room, playerIndex, pts);
+  return true;
 }
 
 function tilePlayableSides(tile, game) {
@@ -357,20 +366,15 @@ function doPass(room, playerIndex, auto = false) {
     const { starterIndex } = g.openingBonusPending;
     const partnerIndex = teammates(room, starterIndex).find((i) => i !== starterIndex);
     if (partnerIndex !== undefined && handHasPlayable(room.players[partnerIndex].hand, g)) {
-      awardPoints(room, starterIndex, OPENING_BLOCK_BONUS);
-      g.bonuses.push({ playerIndex: starterIndex, type: 'openingBlock', points: OPENING_BLOCK_BONUS });
+      const counted = awardBonusPoints(room, starterIndex, OPENING_BLOCK_BONUS);
+      g.bonuses.push({ playerIndex: starterIndex, type: 'openingBlock', points: OPENING_BLOCK_BONUS, counted });
       io.to(room.code).emit('bonus', {
         playerIndex: starterIndex,
         name: room.players[starterIndex].name,
         type: 'openingBlock',
         points: OPENING_BLOCK_BONUS,
+        counted,
       });
-      if (room.players[starterIndex].score >= TARGET_SCORE) {
-        g.over = true;
-        g.roundWinner = starterIndex;
-        g.matchWinner = starterIndex;
-        g.roundPoints = 0;
-      }
     }
     g.openingBonusPending = null;
   }
@@ -384,21 +388,15 @@ function doPass(room, playerIndex, auto = false) {
     g.lastTilePlayer !== null &&
     handHasPlayable(room.players[g.lastTilePlayer].hand, g)
   ) {
-    awardPoints(room, g.lastTilePlayer, PASS_BONUS);
-    g.bonuses.push({ playerIndex: g.lastTilePlayer, type: 'pass', points: PASS_BONUS });
+    const counted = awardBonusPoints(room, g.lastTilePlayer, PASS_BONUS);
+    g.bonuses.push({ playerIndex: g.lastTilePlayer, type: 'pass', points: PASS_BONUS, counted });
     io.to(room.code).emit('bonus', {
       playerIndex: g.lastTilePlayer,
       name: room.players[g.lastTilePlayer].name,
       type: 'pass',
       points: PASS_BONUS,
+      counted,
     });
-    // If the bonus alone reaches the target, the match ends right here.
-    if (room.players[g.lastTilePlayer].score >= TARGET_SCORE) {
-      g.over = true;
-      g.roundWinner = g.lastTilePlayer;
-      g.matchWinner = g.lastTilePlayer;
-      g.roundPoints = PASS_BONUS;
-    }
   }
   if (!g.over) checkBlocked(room);
   if (!g.over) advanceTurn(room);

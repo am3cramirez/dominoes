@@ -227,7 +227,7 @@ input[type="text"]:focus { border-color: var(--accent); }
 
 /* ---- Board ---- */
 #board-wrap {
-  position: absolute; inset: 90px 110px 170px;
+  position: absolute; inset: 84px 72px 156px;
   overflow: visible;
 }
 #board {
@@ -291,6 +291,10 @@ input[type="text"]:focus { border-color: var(--accent); }
   font-size: 5.5rem; font-weight: 900; color: var(--accent);
   text-shadow: 0 0 30px rgba(255,159,28,.9), 0 4px 8px rgba(0,0,0,.5);
   animation: bonus-pop 2.4s cubic-bezier(.2,1.4,.4,1) both;
+}
+#bonus-banner .bonus-points.void {
+  color: #9aa4b4; text-decoration: line-through;
+  text-shadow: 0 3px 6px rgba(0,0,0,.5);
 }
 #bonus-banner .bonus-text {
   font-size: 1.5rem; font-weight: 800; color: #fff; letter-spacing: .12em;

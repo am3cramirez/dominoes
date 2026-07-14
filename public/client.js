@@ -294,16 +294,19 @@ function layoutBoard(g) {
   const anchorIdx = Math.min(g.anchorIndex ?? 0, g.board.length - 1);
   const rot = (d) => ({ x: d.y, y: -d.x }); // right end turns up, left end turns down
 
-  // Every tile — doubles included — lies inline with the direction of travel:
-  // horizontal along a horizontal run, vertical along a vertical run.
+  // Normal tiles lie inline with travel; doubles are ALWAYS drawn vertical
+  // (halves stacked), so they stand perpendicular across a horizontal run and
+  // inline along a vertical run.
   const mk = (tile, near, far, cx, cy, d) => {
     const horiz = d.x !== 0;
+    if (tile[0] === tile[1]) {
+      return { x: cx, y: cy, w: U, h: LONG, orient: 'v', halves: [tile[0], tile[1]] };
+    }
     const w = horiz ? LONG : U;
     const h = horiz ? U : LONG;
-    let halves;
-    if (tile[0] === tile[1]) halves = [tile[0], tile[1]];
-    else if (horiz) halves = d.x > 0 ? [near, far] : [far, near];
-    else halves = d.y > 0 ? [near, far] : [far, near];
+    const halves = horiz
+      ? (d.x > 0 ? [near, far] : [far, near])
+      : (d.y > 0 ? [near, far] : [far, near]);
     return { x: cx, y: cy, w, h, orient: horiz ? 'h' : 'v', halves };
   };
 
@@ -315,23 +318,32 @@ function layoutBoard(g) {
     let px = start, py = 0, d = dir;
     let turns = 0;
     const out = [];
+    // A double is drawn vertical (U wide, LONG tall): its extent along travel
+    // is U in a horizontal run and LONG in a vertical run. Normal tiles are
+    // always LONG along travel, U across.
+    const dims = (tile, dir) => {
+      const isD = tile[0] === tile[1];
+      const h = dir.x !== 0;
+      return { along: isD ? (h ? U : LONG) : LONG, cross: isD ? (h ? LONG : U) : U };
+    };
     for (const i of indices) {
       const tile = g.board[i];
-      const along = LONG; // every tile lies inline, LONG along travel
-      const cross = U; // U across travel
-      const step = along + GAP;
+      let { along, cross } = dims(tile, d);
+      let step = along + GAP;
       // Spiral inward a little each full pair of turns so long chains keep
       // fitting; only the axis of travel gates the bend.
       const bx = SNAKE_X - Math.floor(turns / 2) * (LONG + GAP);
       const by = SNAKE_Y - Math.floor(turns / 2) * (LONG + GAP);
       if ((d.x !== 0 && Math.abs(px + d.x * step) > bx) ||
           (d.y !== 0 && Math.abs(py + d.y * step) > by)) {
-        // Bend: step past the previous tile's end (by half the turning tile's
-        // cross-width) so the corner tile clears it, then rotate 90°.
+        // Bend: step past the previous tile's end so the corner tile clears it,
+        // rotate 90°, then re-measure the tile for its new direction.
         px += d.x * (cross / 2 + GAP);
         py += d.y * (cross / 2 + GAP);
         d = rot(d);
         turns++;
+        ({ along, cross } = dims(tile, d));
+        step = along + GAP;
       }
       const cx = px + d.x * (along / 2);
       const cy = py + d.y * (along / 2);
@@ -343,14 +355,15 @@ function layoutBoard(g) {
   };
 
   const at = g.board[anchorIdx];
+  const anchorD = at[0] === at[1]; // a double opener stands vertical
   placements.push({
     index: anchorIdx, dir: { x: 1, y: 0 },
     x: 0, y: 0,
-    w: LONG, h: U,
-    orient: 'h',
+    w: anchorD ? U : LONG, h: anchorD ? LONG : U,
+    orient: anchorD ? 'v' : 'h',
     halves: [at[0], at[1]],
   });
-  const aHalf = LONG / 2 + GAP;
+  const aHalf = (anchorD ? U : LONG) / 2 + GAP;
 
   const rightIdx = [];
   for (let i = anchorIdx + 1; i < g.board.length; i++) rightIdx.push(i);
@@ -580,7 +593,10 @@ socket.on('bonus', (b) => {
   setTimeout(() => {
     Sound.bonus();
     const banner = $('bonus-banner');
-    banner.querySelector('.bonus-points').textContent = `+${b.points}`;
+    const counted = b.counted !== false;
+    const pointsEl = banner.querySelector('.bonus-points');
+    pointsEl.textContent = `+${b.points}`;
+    pointsEl.classList.toggle('void', !counted);
     let who = b.name;
     if (state?.teams && state.players[b.playerIndex]) {
       who = state.players
@@ -588,10 +604,12 @@ socket.on('bonus', (b) => {
         .map((p) => p.name)
         .join(' & ');
     }
-    banner.querySelector('.bonus-text').textContent =
+    const headline =
       b.type === 'capicua' ? `Capicúa! ${who}`
       : b.type === 'openingBlock' ? `${who} opened strong — shut out!`
       : `${who} shut everyone out!`;
+    banner.querySelector('.bonus-text').textContent =
+      counted ? headline : `${headline}  ·  doesn't count (would pass ${state?.game?.targetScore ?? 200})`;
     banner.classList.remove('hidden');
     // restart CSS animations
     banner.querySelectorAll('div').forEach((d) => {
@@ -819,10 +837,12 @@ function renderGame() {
   let scale = 1;
   if (placements.length) {
     const wrap = $('board-wrap').getBoundingClientRect();
-    const pad = 70; // breathing room for drop zones
+    const pad = 60; // breathing room for drop zones
     const bw = maxX - minX + pad * 2;
     const bh = maxY - minY + pad * 2;
-    scale = Math.min(1, wrap.width / bw, wrap.height / bh);
+    // Allow up to 1.4x so small/medium boards render noticeably larger; big
+    // boards still shrink to fit.
+    scale = Math.min(1.4, wrap.width / bw, wrap.height / bh);
     const cx = (minX + maxX) / 2;
     const cy = (minY + maxY) / 2;
     board.style.transform = `scale(${scale}) translate(${-cx}px, ${-cy}px)`;
@@ -968,11 +988,10 @@ function buildScoreRows(g, winnerIdx) {
           ? state.players[b.playerIndex]?.team === state.players[idx]?.team
           : b.playerIndex === idx
       )
-      .map((b) =>
-        b.type === 'capicua' ? `Capicúa +${b.points}`
-        : b.type === 'openingBlock' ? `Shutout +${b.points}`
-        : `Pass +${b.points}`
-      );
+      .map((b) => {
+        const label = b.type === 'capicua' ? 'Capicúa' : b.type === 'openingBlock' ? 'Shutout' : 'Pass';
+        return b.counted === false ? `${label} +${b.points} (void)` : `${label} +${b.points}`;
+      });
 
   if (state.teams) {
     return [0, 1].map((t) => {
@@ -1014,7 +1033,7 @@ function runTally(g) {
   rowsEl.innerHTML = '';
   const D_ANIM = 900;
   const STAGGER = 120;
-  const HOLD = 850;
+  const HOLD = 2000; // linger ~2s after the count-up before the next round
   rows.forEach((r, i) => {
     const from = lastLiveScores?.[r.repIdx] ?? r.to;
     const el = document.createElement('div');
