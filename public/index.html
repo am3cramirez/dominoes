@@ -47,6 +47,15 @@
     </div>
   </section>
 
+  <!-- TALLY (round result, no click required) -->
+  <div id="tally" class="hidden">
+    <div class="card tally-card">
+      <h2 id="tally-title"></h2>
+      <p id="tally-sub"></p>
+      <div id="tally-rows"></div>
+    </div>
+  </div>
+
   <!-- GAME -->
   <section id="screen-game" class="screen">
     <div id="table">
@@ -86,14 +95,13 @@
       <button data-side="right" class="btn">Right end ▶</button>
     </div>
 
-    <!-- round over overlay -->
+    <!-- match over: only shown once someone reaches the target score -->
     <div id="overlay" class="hidden">
       <div class="card overlay-card">
         <h2 id="overlay-title"></h2>
         <p id="overlay-sub"></p>
         <div id="overlay-scores"></div>
-        <p id="overlay-auto" class="countdown"></p>
-        <button id="btn-next-round" class="btn primary">Next Round</button>
+        <button id="btn-next-round" class="btn primary">Play Again</button>
         <button id="btn-back-home" class="btn ghost">Back to Home</button>
       </div>
     </div>

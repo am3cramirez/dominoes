@@ -374,6 +374,30 @@ input[type="text"]:focus { border-color: var(--accent); }
 #overlay-scores .row.winner { background: #fff2dd; font-weight: 700; }
 #btn-next-round { margin-bottom: 8px; width: 100%; }
 
+/* ---- Round tally (high-score style, auto-dismisses) ---- */
+#tally {
+  position: fixed; inset: 0; background: rgba(10,14,20,.72);
+  display: flex; align-items: center; justify-content: center; z-index: 110;
+  animation: tally-fade-in .25s ease;
+}
+#tally.hidden { display: none; }
+.tally-card { background: #1c2436; color: #fff; width: min(92vw, 440px); }
+.tally-card h2 { color: var(--accent); margin-bottom: 4px; }
+.tally-card p { color: #aab3c5; margin-bottom: 14px; }
+#tally-rows { display: flex; flex-direction: column; gap: 10px; }
+.tally-row {
+  display: flex; justify-content: space-between; align-items: baseline;
+  padding: 12px 16px; border-radius: 10px; background: rgba(255,255,255,.06);
+  transition: background .3s;
+}
+.tally-row.winner { background: rgba(255,159,28,.18); }
+.tally-row .tr-name { font-weight: 700; font-size: 1rem; }
+.tally-row .tr-score {
+  font-variant-numeric: tabular-nums; font-weight: 800; font-size: 1.6rem; color: var(--accent);
+}
+.tally-row .tr-tags { font-size: .72rem; color: #ffd39a; margin-top: 2px; }
+@keyframes tally-fade-in { from { opacity: 0; } to { opacity: 1; } }
+
 /* ---- Toasts ---- */
 #toasts {
   position: fixed; top: 14px; left: 50%; transform: translateX(-50%);

@@ -18,8 +18,10 @@ const PASS_BONUS = 25; // everyone skips after your tile
 const CAPICUA_BONUS = 25; // winning tile fits both ends
 const TURN_MS = Number(process.env.TURN_MS) || 15000; // time to play before the CPU plays for you
 const AUTO_DELAY = Number(process.env.AUTO_DELAY_MS) || 900; // pause before automatic draws/passes so players can follow
-const AUTO_START_MS = Number(process.env.AUTO_START_MS) || 10000; // public lobby countdown once 2+ players
-const NEXT_ROUND_MS = Number(process.env.NEXT_ROUND_MS) || 8000; // pause between rounds in public rooms
+const LOBBY_COUNTDOWN_MS = Number(process.env.LOBBY_COUNTDOWN_MS) || 25000; // join window after host presses Start
+const BOT_MOVE_MS = Number(process.env.BOT_MOVE_MS) || 1300; // CPU-filled players "think" this long per turn
+const ROUND_TALLY_MS = Number(process.env.ROUND_TALLY_MS) || 3200; // gap before the next round auto-deals
+const OPENING_BLOCK_BONUS = 25; // round-opening tile shuts out the next opponent, but not their partner too
 const ROOM_TTL_MS = 1000 * 60 * 60; // sweep rooms idle for an hour
 
 /** rooms: code -> room */
@@ -95,7 +97,7 @@ function createRoom(hostSocket, name, isPublic) {
     hostId: hostSocket.id,
     players: [], // { id, name, connected, hand: [], score }
     game: null,
-    autoStartAt: null,
+    startCountdownEndsAt: null,
     lastActivity: Date.now(),
   };
   rooms.set(code, room);
@@ -106,7 +108,7 @@ function createRoom(hostSocket, name, isPublic) {
 /** Deal a new round if the room is in a startable state. Returns true if started. */
 function tryStartRound(room) {
   if (room.game && !room.game.over) return false;
-  clearLobbyTimer(room);
+  clearStartCountdown(room);
   // Drop seats that never came back before dealing a fresh round.
   room.players = room.players.filter((p) => p.connected);
   if (room.players.length < MIN_PLAYERS) return false;
@@ -118,33 +120,57 @@ function tryStartRound(room) {
   return true;
 }
 
-function clearLobbyTimer(room) {
-  if (room.lobbyTimer) clearTimeout(room.lobbyTimer);
-  room.lobbyTimer = null;
-  room.autoStartAt = null;
+function clearStartCountdown(room) {
+  if (room.startCountdownTimer) clearTimeout(room.startCountdownTimer);
+  room.startCountdownTimer = null;
+  room.startCountdownEndsAt = null;
 }
 
-/** Public rooms start themselves: instantly when full, on a short countdown at 2+. */
-function maybeAutoStart(room, delay = AUTO_START_MS) {
-  if (!room.isPublic) return;
-  if (room.game && !room.game.over) return;
-  const n = room.players.filter((p) => p.connected).length;
-  if (n < MIN_PLAYERS) {
-    clearLobbyTimer(room);
-    return;
+function clearRoundTimer(room) {
+  if (room.roundTimer) clearTimeout(room.roundTimer);
+  room.roundTimer = null;
+}
+
+/** Fill every empty seat (up to MAX_PLAYERS) with a CPU-controlled bot. */
+function fillWithBots(room) {
+  let n = 1;
+  while (room.players.length < MAX_PLAYERS) {
+    while (room.players.some((p) => p.name === `CPU ${n}`)) n++;
+    room.players.push({
+      id: `bot-${room.code}-${n}`,
+      name: `CPU ${n}`,
+      connected: true,
+      isBot: true,
+      hand: [],
+      score: 0,
+    });
+    n++;
   }
-  if (n >= MAX_PLAYERS) {
-    tryStartRound(room);
-    return;
-  }
-  clearLobbyTimer(room);
-  room.autoStartAt = Date.now() + delay;
-  room.lobbyTimer = setTimeout(() => {
-    room.lobbyTimer = null;
-    room.autoStartAt = null;
+}
+
+/** Start (or restart) the 25s join window. Any join while it runs resets it. */
+function armStartCountdown(room) {
+  clearStartCountdown(room);
+  room.startCountdownEndsAt = Date.now() + LOBBY_COUNTDOWN_MS;
+  room.startCountdownTimer = setTimeout(() => {
+    if (rooms.get(room.code) !== room) return;
+    room.startCountdownTimer = null;
+    room.startCountdownEndsAt = null;
+    if (room.players.length < MAX_PLAYERS) fillWithBots(room);
     tryStartRound(room);
     broadcast(room);
-  }, delay);
+  }, LOBBY_COUNTDOWN_MS);
+}
+
+/** Called after a join: extend the countdown, or start now if the table just filled up. */
+function onPlayerJoinedDuringLobby(room) {
+  if (!room.startCountdownTimer) return;
+  if (room.players.length >= MAX_PLAYERS) {
+    clearStartCountdown(room);
+    tryStartRound(room);
+  } else {
+    armStartCountdown(room);
+  }
 }
 
 function addPlayer(room, socket, name) {
@@ -215,9 +241,10 @@ function beginTurn(room) {
   if (g.turn >= room.players.length) g.turn = 0;
   const player = room.players[g.turn];
 
+  const autoDelay = AUTO_DELAY;
   if (!handHasPlayable(player.hand, g)) {
-    g.turnDeadline = Date.now() + AUTO_DELAY;
-    g.turnTotal = AUTO_DELAY;
+    g.turnDeadline = Date.now() + autoDelay;
+    g.turnTotal = autoDelay;
     room.autoTimer = setTimeout(() => {
       const cur = room.game;
       if (!cur || cur.over || cur !== g) return;
@@ -229,12 +256,14 @@ function beginTurn(room) {
       } else {
         doPass(room, g.turn, true);
       }
-    }, AUTO_DELAY);
+    }, autoDelay);
     return;
   }
 
-  g.turnDeadline = Date.now() + TURN_MS;
-  g.turnTotal = TURN_MS;
+  // CPU-filled seats "think" briefly instead of waiting out the full human timer.
+  const thinkMs = player.isBot ? BOT_MOVE_MS : TURN_MS;
+  g.turnDeadline = Date.now() + thinkMs;
+  g.turnTotal = thinkMs;
   room.turnTimer = setTimeout(() => {
     const cur = room.game;
     if (!cur || cur.over || cur !== g) return;
@@ -245,9 +274,9 @@ function beginTurn(room) {
     });
     if (options.length === 0) return beginTurn(room); // shouldn't happen
     const pick = options[Math.floor(Math.random() * options.length)];
-    io.to(room.code).emit('toast', `⏱ Time's up — playing for ${player.name}`);
+    if (!player.isBot) io.to(room.code).emit('toast', `⏱ Time's up — playing for ${player.name}`);
     doPlay(room, g.turn, pick.i, pick.side, true);
-  }, TURN_MS);
+  }, thinkMs);
 }
 
 /** Place a tile. Assumes turn/ownership already validated. Returns {error} or {ok}. */
@@ -261,6 +290,13 @@ function doPlay(room, playerIndex, tileIndex, side, auto = false) {
     if (sides.length === 0) return { error: "That tile doesn't match either end." };
     side = sides[0];
   }
+
+  // Resolve any pending opening-block bonus: this player COULD play, so no bonus.
+  if (g.openingBonusPending && g.openingBonusPending.nextIndex === playerIndex) {
+    g.openingBonusPending = null;
+  }
+
+  const wasFirstTile = g.board.length === 0;
 
   // Capicúa: the round-winning tile fits BOTH open ends of the line.
   if (player.hand.length === 1 && g.board.length > 0 && tile[0] !== tile[1]) {
@@ -294,6 +330,11 @@ function doPlay(room, playerIndex, tileIndex, side, auto = false) {
     endRound(room, playerIndex, false);
   } else {
     advanceTurn(room);
+    // Track the round-opening tile so we can reward the opener if the very
+    // next player is shut out — but only while their partner can still play.
+    if (wasFirstTile && teamsEnabled(room)) {
+      g.openingBonusPending = { starterIndex: playerIndex, nextIndex: g.turn };
+    }
   }
   broadcast(room);
   if (!g.over) beginTurn(room);
@@ -305,8 +346,34 @@ function doPass(room, playerIndex, auto = false) {
   const g = room.game;
   g.passes += 1;
   g.lastMove = { playerIndex, pass: true, auto };
+
+  // Opening-block bonus: the round-opening tile shut out the very next
+  // player, but only pays if the opener's partner can still play — if it
+  // skips the partner too, nothing is awarded.
+  if (g.openingBonusPending && g.openingBonusPending.nextIndex === playerIndex) {
+    const { starterIndex } = g.openingBonusPending;
+    const partnerIndex = teammates(room, starterIndex).find((i) => i !== starterIndex);
+    if (partnerIndex !== undefined && handHasPlayable(room.players[partnerIndex].hand, g)) {
+      awardPoints(room, starterIndex, OPENING_BLOCK_BONUS);
+      g.bonuses.push({ playerIndex: starterIndex, type: 'openingBlock', points: OPENING_BLOCK_BONUS });
+      io.to(room.code).emit('bonus', {
+        playerIndex: starterIndex,
+        name: room.players[starterIndex].name,
+        type: 'openingBlock',
+        points: OPENING_BLOCK_BONUS,
+      });
+      if (room.players[starterIndex].score >= TARGET_SCORE) {
+        g.over = true;
+        g.roundWinner = starterIndex;
+        g.matchWinner = starterIndex;
+        g.roundPoints = 0;
+      }
+    }
+    g.openingBonusPending = null;
+  }
+
   // Pass-around bonus: everyone else skipped after the last tile played.
-  if (g.passes === room.players.length - 1 && g.lastTilePlayer !== null) {
+  if (!g.over && g.passes === room.players.length - 1 && g.lastTilePlayer !== null) {
     awardPoints(room, g.lastTilePlayer, PASS_BONUS);
     g.bonuses.push({ playerIndex: g.lastTilePlayer, type: 'pass', points: PASS_BONUS });
     io.to(room.code).emit('bonus', {
@@ -339,8 +406,8 @@ function advanceTurn(room) {
 function endRound(room, winnerIndex, blocked) {
   const g = room.game;
   clearTimers(room);
+  clearRoundTimer(room);
   g.over = true;
-  if (room.isPublic) maybeAutoStart(room, NEXT_ROUND_MS);
   g.blocked = blocked;
   g.roundWinner = winnerIndex;
   if (winnerIndex !== null) {
@@ -364,6 +431,17 @@ function endRound(room, winnerIndex, blocked) {
     if (room.players[winnerIndex].score >= TARGET_SCORE) g.matchWinner = winnerIndex;
   } else {
     g.roundPoints = 0; // tie on a blocked game
+  }
+
+  // Mid-match rounds deal themselves automatically once the score tally has
+  // had time to play out on screen — no "next round" button. A finished
+  // match waits for the host to press Start again (fresh lobby countdown).
+  if (g.matchWinner === null || g.matchWinner === undefined) {
+    room.roundTimer = setTimeout(() => {
+      if (rooms.get(room.code) !== room) return;
+      room.roundTimer = null;
+      if (tryStartRound(room)) broadcast(room);
+    }, ROUND_TALLY_MS);
   }
 }
 
@@ -402,7 +480,7 @@ function stateFor(room, playerId) {
   return {
     code: room.code,
     isPublic: room.isPublic,
-    autoStartAt: room.autoStartAt,
+    startCountdownEndsAt: room.startCountdownEndsAt,
     hostId: room.hostId,
     youIndex: meIndex,
     teams: teamsEnabled(room),
@@ -480,7 +558,7 @@ io.on('connection', (socket) => {
       addPlayer(best, socket, name);
       cb({ ok: true, code: best.code });
       io.to(best.code).emit('toast', `${name} joined the room`);
-      maybeAutoStart(best);
+      onPlayerJoinedDuringLobby(best);
       broadcast(best);
     } else {
       const room = createRoom(socket, name, true);
@@ -518,16 +596,23 @@ io.on('connection', (socket) => {
     addPlayer(room, socket, name);
     cb({ ok: true, code: room.code });
     io.to(room.code).emit('toast', `${name} joined the room`);
-    maybeAutoStart(room);
+    onPlayerJoinedDuringLobby(room);
     broadcast(room);
   });
 
+  // Host presses Start: opens (or refreshes) a 25s window for others to join.
+  // If the table is already full, the round deals immediately.
   socket.on('startGame', (cb) => {
     const { room } = getRoomAndPlayer(socket);
     if (!room) return cb?.({ error: 'Not in a room.' });
     if (socket.id !== room.hostId) return cb?.({ error: 'Only the host can start.' });
     if (room.game && !room.game.over) return cb?.({ error: 'Game already running.' });
-    if (!tryStartRound(room)) return cb?.({ error: 'Need at least 2 players.' });
+    if (room.players.length >= MAX_PLAYERS) {
+      if (!tryStartRound(room)) return cb?.({ error: 'Unable to start.' });
+      cb?.({ ok: true });
+      return broadcast(room);
+    }
+    armStartCountdown(room);
     cb?.({ ok: true });
     broadcast(room);
   });
@@ -561,7 +646,8 @@ io.on('connection', (socket) => {
     cb?.({ ok: true });
     if (room.players.length === 0) {
       clearTimers(room);
-      clearLobbyTimer(room);
+      clearStartCountdown(room);
+      clearRoundTimer(room);
       rooms.delete(room.code);
       return;
     }
@@ -608,12 +694,10 @@ function handleLeave(socket, explicit) {
 
   if (room.players.length === 0) {
     clearTimers(room);
-    clearLobbyTimer(room);
+    clearStartCountdown(room);
+    clearRoundTimer(room);
     rooms.delete(room.code);
     return;
-  }
-  if (room.isPublic && room.players.filter((p) => p.connected).length < MIN_PLAYERS) {
-    clearLobbyTimer(room);
   }
   if (!room.players.some((p) => p.id === room.hostId)) {
     const newHost = room.players.find((p) => p.connected) || room.players[0];
@@ -631,7 +715,8 @@ setInterval(() => {
   for (const [code, room] of rooms) {
     if (now - room.lastActivity > ROOM_TTL_MS) {
       clearTimers(room);
-      clearLobbyTimer(room);
+      clearStartCountdown(room);
+      clearRoundTimer(room);
       rooms.delete(code);
     }
   }

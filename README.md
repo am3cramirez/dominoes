@@ -4,17 +4,19 @@ An online multiplayer dominoes game (draw variant) inspired by dominoes.playdrif
 
 ## Features
 
-- **Room codes** — host creates a room, gets a shareable 5-letter code, 2–4 players join with it
+- **Room codes** — host creates a room, gets a shareable 5-letter code, 2–4 players join with it; **Play Now** matches you into any open public table with no code needed
 - **Real-time gameplay** via Socket.IO, with server-authoritative rules (no cheating from the client)
 - **Draw dominoes rules** — double-six set, 7 tiles each, draw from the boneyard when you can't play, pass when it's empty
+- **Lobby countdown** — press Start with as few as 1 player to open a 25s join window; every join resets it, and empty seats fill with CPU-controlled players when it expires
 - **Scoring across rounds** — round winner collects ALL remaining pips on the table; first to 200 wins the match
 - **Team play** — with exactly 4 players it's partner dominoes (seats 1&3 vs 2&4, all 28 tiles dealt, no boneyard); points go to the team
-- **Bonuses** — +25 when everyone passes after your tile (pass-around), +25 when your winning tile fits both open ends (capicúa)
+- **Bonuses** — +25 when everyone passes after your tile (pass-around), +25 when your winning tile fits both open ends (capicúa), +25 when your round-opening tile shuts out the very next opponent while your partner can still play (opening block)
 - **Blocked-game handling** — fewest remaining pips wins when nobody can move (team totals in team play)
 - **Drag & drop** — drag tiles from your hand onto the board's drop zones (tap still works)
-- **15-second turn timer** — visible countdown; when it runs out the CPU plays a valid tile for you
+- **Anchored snake board** — the chain bends at the table edges like a real layout, and the whole board zooms out smoothly to keep everything in view as it grows
+- **15-second turn timer** — visible countdown; when it runs out the CPU plays a valid tile for you. CPU-filled seats move in ~1.3s
 - **Automatic draw/pass** — no playable tile? The server draws (or passes) for you, no buttons to click
-- **Celebrations** — big banner when a pass-around bonus lands; the winning tile smacks the table and scatters the whole line
+- **Celebrations** — big banner when a bonus lands; the winning tile smacks the table and scatters the whole line; round results appear as a high-score-style tally that counts up and auto-advances to the next round — no "Next Round" click
 - **Reconnect support** — drop mid-game and rejoin with the same name and room code; host can remove players who don't come back
 - Mobile-friendly UI with tile animations, turn indicators, and live opponent tile counts
 
@@ -27,11 +29,13 @@ npm start
 
 Open http://localhost:3000 (set `PORT` to change the port). To play with friends over the internet, deploy anywhere Node.js runs (Railway, Render, Fly.io, a VPS) — it's a single process with no database.
 
+Tunable timings via environment variables (all optional, sane defaults baked in): `TURN_MS`, `AUTO_DELAY_MS`, `LOBBY_COUNTDOWN_MS`, `BOT_MOVE_MS`, `ROUND_TALLY_MS`.
+
 ## How to play
 
-1. Enter your name and click **Create Room**
-2. Share the room code with friends; they enter it under **Join**
-3. Host clicks **Start Game** once 2–4 players are in
-4. The player with the highest double leads. On your turn, click a highlighted tile to play it; if it fits both ends you'll be asked which side
-5. Can't play? **Draw** from the boneyard until you can, or **Pass** once it's empty
-6. First player to empty their hand wins the round and scores the opponents' remaining pips. First to 100 points wins the match
+1. Enter your name and click **Play Now** to join any open table, or **Create Private Room** for a code-only game with friends
+2. Once at least one player is seated, press **Start Game** — this opens a 25 second window for others to join (every join resets it); if it runs out, empty seats are filled with CPU players
+3. With exactly 4 players it's 2v2 partner dominoes; otherwise it's every player for themselves
+4. The player with the highest double leads. Drag a tile onto a highlighted drop zone to play it; if it fits both ends you'll be asked which side
+5. Can't play? The server automatically draws or passes for you — just wait for your turn
+6. First to empty their hand wins the round and collects all remaining pips on the table, plus any bonuses. Watch the score tally, then the next round deals itself automatically. First to 200 points wins the match

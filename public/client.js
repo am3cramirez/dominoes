@@ -9,7 +9,9 @@ let selectedTileIndex = null;
 let prevBoardLen = 0; // for detecting a newly placed tile to animate
 let pendingHandRect = null; // where my played tile started, so the animation begins there
 let wasOver = false; // detects the round-end transition for the smack finale
-let overlayHoldUntil = 0; // keep the scoreboard hidden while the finale plays
+let overlayHoldUntil = 0; // keep the tally hidden while the smack finale plays
+let lastLiveScores = null; // scores from the moment before the round ended (tally "from" values)
+let tallyTriggeredForRound = false; // guards runTally() to once per round-over transition
 
 function show(name) {
   Object.values(screens).forEach((s) => s.classList.remove('active'));
@@ -155,6 +157,10 @@ function leaveRoom() {
   state = null;
   prevBoardLen = 0;
   wasOver = false;
+  lastLiveScores = null;
+  tallyTriggeredForRound = false;
+  $('tally').classList.add('hidden');
+  $('overlay').classList.add('hidden');
   show('home');
 }
 
@@ -423,11 +429,16 @@ function tapPlay(el, tileIndex, sides) {
       bar.style.transform = `scaleX(${frac})`;
     });
   }
-  const secs = state?.autoStartAt
-    ? Math.max(0, Math.ceil((state.autoStartAt - Date.now()) / 1000))
+  const secs = state?.startCountdownEndsAt
+    ? Math.max(0, Math.ceil((state.startCountdownEndsAt - Date.now()) / 1000))
     : null;
-  $('lobby-countdown').textContent = secs !== null && !state.game ? `Starting in ${secs}s…` : '';
-  $('overlay-auto').textContent = secs !== null && state?.game?.over ? `Next round in ${secs}s…` : '';
+  if (secs !== null && !state.game) {
+    const empty = Math.max(0, 4 - state.players.length);
+    $('lobby-countdown').textContent =
+      `Starting in ${secs}s…` + (empty > 0 ? ` (${empty} empty seat${empty > 1 ? 's' : ''} → CPU)` : '');
+  } else {
+    $('lobby-countdown').textContent = '';
+  }
   requestAnimationFrame(tickTimer);
 })();
 
@@ -445,7 +456,9 @@ socket.on('bonus', (b) => {
         .join(' & ');
     }
     banner.querySelector('.bonus-text').textContent =
-      b.type === 'capicua' ? `Capicúa! ${who}` : `${who} shut everyone out!`;
+      b.type === 'capicua' ? `Capicúa! ${who}`
+      : b.type === 'openingBlock' ? `${who} opened strong — shut out!`
+      : `${who} shut everyone out!`;
     banner.classList.remove('hidden');
     // restart CSS animations
     banner.querySelectorAll('div').forEach((d) => {
@@ -492,6 +505,9 @@ function render() {
 function renderLobby() {
   show('lobby');
   wasOver = false;
+  tallyTriggeredForRound = false;
+  $('tally').classList.add('hidden');
+  $('overlay').classList.add('hidden');
   $('lobby-code').textContent = state.code;
   const list = $('lobby-players');
   list.innerHTML = '';
@@ -516,11 +532,14 @@ function renderLobby() {
 
   const meHost = state.players[state.youIndex]?.isHost;
   $('btn-start').style.display = meHost ? '' : 'none';
-  $('btn-start').disabled = state.players.length < 2;
+  $('btn-start').disabled = false;
+  const counting = !!state.startCountdownEndsAt;
   let hint = meHost
-    ? state.players.length < 2 ? 'Waiting for at least one more player…' : 'Ready when you are!'
-    : state.isPublic
-      ? 'The game starts automatically…'
+    ? counting
+      ? 'Waiting for more players — empty seats fill with CPU players when time runs out.'
+      : 'Press Start when ready — you\'ll get 25s for others to join first.'
+    : counting
+      ? 'Starting soon…'
       : 'Waiting for the host to start the game…';
   if (state.players.length === 4) {
     const t0 = state.players.filter((p) => p.team === 0).map((p) => p.name).join(' & ');
@@ -643,8 +662,11 @@ function renderGame() {
   }
   boardMeta = { scale, ends };
 
+  if (!g.over) lastLiveScores = state.players.map((p) => p.score);
+
   // round just ended with a played tile -> smack finale; otherwise fly-in
   const justEnded = g.over && !wasOver;
+  if (justEnded) tallyTriggeredForRound = false;
   const smackFinale =
     justEnded && !g.blocked && g.lastMove?.tile && g.roundWinner === g.lastMove.playerIndex;
 
@@ -719,18 +741,114 @@ function renderGame() {
   }
   $('turn-label').textContent = label;
 
-  // --- round-over overlay (delayed while the finale plays) ---
+  // --- round result: a high-score-style tally, no click required ---
   if (g.over) {
-    const wait = overlayHoldUntil - Date.now();
-    if (wait > 0) {
-      $('overlay').classList.add('hidden');
-      setTimeout(() => state?.game?.over && renderOverlay(state.game), wait);
-    } else {
-      renderOverlay(g);
+    if (!tallyTriggeredForRound) {
+      tallyTriggeredForRound = true;
+      const wait = Math.max(0, overlayHoldUntil - Date.now());
+      setTimeout(() => state?.game?.over && runTally(state.game), wait);
     }
   } else {
+    $('tally').classList.add('hidden');
     $('overlay').classList.add('hidden');
   }
+}
+
+/* Shared row-building for the tally and the match-over card. */
+function buildScoreRows(g, winnerIdx) {
+  const tagsFor = (idx) =>
+    (g.bonuses || [])
+      .filter((b) =>
+        state.teams
+          ? state.players[b.playerIndex]?.team === state.players[idx]?.team
+          : b.playerIndex === idx
+      )
+      .map((b) =>
+        b.type === 'capicua' ? `Capicúa +${b.points}`
+        : b.type === 'openingBlock' ? `Shutout +${b.points}`
+        : `Pass +${b.points}`
+      );
+
+  if (state.teams) {
+    return [0, 1].map((t) => {
+      const members = state.players.map((p, i) => ({ p, i })).filter(({ p }) => p.team === t);
+      const repIdx = members[0].i;
+      return {
+        label: members.map(({ p, i }) => p.name + (i === state.youIndex ? ' (you)' : '')).join(' & '),
+        to: members[0].p.score,
+        repIdx,
+        winner: winnerIdx !== null && state.players[winnerIdx]?.team === t,
+        tags: tagsFor(repIdx),
+      };
+    });
+  }
+  return state.players.map((p, i) => ({
+    label: p.name + (i === state.youIndex ? ' (you)' : ''),
+    to: p.score,
+    repIdx: i,
+    winner: i === winnerIdx,
+    tags: tagsFor(i),
+  }));
+}
+
+/* High-score-style tally: numbers count up rapidly, then either the match
+   card appears (match won) or this just fades — the server deals the next
+   round on its own, no button required. */
+function runTally(g) {
+  const isMatchOver = g.matchWinner !== null && g.matchWinner !== undefined;
+  const winnerIdx = isMatchOver ? g.matchWinner : g.roundWinner;
+  const rows = buildScoreRows(g, winnerIdx).sort((a, b) => b.to - a.to);
+
+  const winnerRow = rows.find((r) => r.winner);
+  $('tally-title').textContent = isMatchOver
+    ? `🏆 ${winnerRow?.label ?? ''} wins the match!`
+    : g.blocked
+      ? winnerRow ? `Blocked — ${winnerRow.label} takes it` : 'Blocked — tie round'
+      : winnerRow ? `${winnerRow.label} wins the round!` : 'Round over';
+  $('tally-sub').textContent = g.blocked
+    ? 'Fewest remaining pips wins the round.'
+    : g.roundWinner !== null ? 'All remaining pips collected:' : '';
+
+  const rowsEl = $('tally-rows');
+  rowsEl.innerHTML = '';
+  const D_ANIM = 1100;
+  const STAGGER = 150;
+  const HOLD = 1000;
+  rows.forEach((r, i) => {
+    const from = lastLiveScores?.[r.repIdx] ?? r.to;
+    const el = document.createElement('div');
+    el.className = 'tally-row' + (r.winner ? ' winner' : '');
+    const nameEl = document.createElement('span');
+    nameEl.className = 'tr-name';
+    nameEl.textContent = r.label;
+    const scoreEl = document.createElement('span');
+    scoreEl.className = 'tr-score';
+    scoreEl.textContent = from;
+    el.append(nameEl, scoreEl);
+    if (r.tags.length) {
+      const tagEl = document.createElement('div');
+      tagEl.className = 'tr-tags';
+      tagEl.textContent = r.tags.join(' · ');
+      el.appendChild(tagEl);
+    }
+    rowsEl.appendChild(el);
+
+    const start = performance.now() + i * STAGGER;
+    const step = (now) => {
+      const t = Math.max(0, Math.min(1, (now - start) / D_ANIM));
+      const eased = 1 - Math.pow(1 - t, 3);
+      scoreEl.textContent = Math.round(from + (r.to - from) * eased);
+      if (t < 1) requestAnimationFrame(step);
+    };
+    requestAnimationFrame(step);
+  });
+
+  $('tally').classList.remove('hidden');
+  const totalMs = (rows.length - 1) * STAGGER + D_ANIM + HOLD;
+  setTimeout(() => {
+    $('tally').classList.add('hidden');
+    if (isMatchOver && state?.game?.over) renderOverlay(state.game);
+  }, totalMs);
 }
 
 function newestTileEl(board, g) {
@@ -739,74 +857,33 @@ function newestTileEl(board, g) {
     : board.children[board.children.length - 1];
 }
 
+/* Persistent match-over card — shown once, after the tally finishes. Round
+   endings never reach here; the server deals the next round on its own. */
 function renderOverlay(g) {
   const overlay = $('overlay');
   overlay.classList.remove('hidden');
-  const isMatchOver = g.matchWinner !== null && g.matchWinner !== undefined;
-  const sideName = (i) => {
-    if (i === null || i === undefined) return null;
-    if (!state.teams) return state.players[i]?.name;
-    return state.players.filter((p) => p.team === state.players[i].team).map((p) => p.name).join(' & ');
-  };
-  const winnerIdx = isMatchOver ? g.matchWinner : g.roundWinner;
-  const iWon = winnerIdx !== null && (state.teams
-    ? state.players[winnerIdx]?.team === state.players[state.youIndex]?.team
-    : winnerIdx === state.youIndex);
-  $('overlay-title').textContent = isMatchOver
-    ? `🏆 ${sideName(g.matchWinner)} win${state.teams ? '' : 's'} the match!`
-    : g.roundWinner === null
-      ? 'Blocked — tie round!'
-      : iWon
-        ? '🎉 You won the round!'
-        : `${sideName(g.roundWinner)} won the round`;
+  const winnerIdx = g.matchWinner;
+  const rows = buildScoreRows(g, winnerIdx).sort((a, b) => b.to - a.to);
+  const winnerRow = rows.find((r) => r.winner);
 
-  const subParts = [];
-  if (g.blocked) subParts.push('The game was blocked — fewest remaining pips takes it.');
-  else if (g.roundWinner !== null) subParts.push(`All remaining pips collected: +${g.roundPoints} pts.`);
-  for (const b of g.bonuses || []) {
-    subParts.push(
-      b.type === 'capicua'
-        ? `Capicúa! The winning tile fit both ends: +${b.points}.`
-        : `${state.players[b.playerIndex]?.name} made everyone pass: +${b.points}.`
-    );
-  }
-  $('overlay-sub').textContent = subParts.join(' ');
+  $('overlay-title').textContent = `🏆 ${winnerRow?.label ?? ''} win${state.teams ? '' : 's'} the match!`;
+  $('overlay-sub').textContent = `First to ${g.targetScore} points.`;
 
   const scores = $('overlay-scores');
   scores.innerHTML = '';
-  let rows;
-  if (state.teams) {
-    rows = [0, 1].map((t) => {
-      const members = state.players.map((p, i) => ({ p, i })).filter(({ p }) => p.team === t);
-      return {
-        label: members.map(({ p }) => p.name).join(' & ') + (members.some(({ i }) => i === state.youIndex) ? ' (you)' : ''),
-        score: members[0].p.score,
-        winner: winnerIdx !== null && state.players[winnerIdx]?.team === t,
-      };
-    });
-  } else {
-    rows = state.players.map((p, i) => ({
-      label: p.name + (i === state.youIndex ? ' (you)' : ''),
-      score: p.score,
-      winner: i === winnerIdx,
-    }));
-  }
-  rows
-    .sort((a, b) => b.score - a.score)
-    .forEach((r) => {
-      const row = document.createElement('div');
-      row.className = 'row' + (r.winner ? ' winner' : '');
-      const left = document.createElement('span');
-      left.textContent = r.label;
-      const right = document.createElement('span');
-      right.textContent = `${r.score} pts`;
-      row.append(left, right);
-      scores.appendChild(row);
-    });
+  rows.forEach((r) => {
+    const row = document.createElement('div');
+    row.className = 'row' + (r.winner ? ' winner' : '');
+    const left = document.createElement('span');
+    left.textContent = r.label;
+    const right = document.createElement('span');
+    right.textContent = `${r.to} pts`;
+    row.append(left, right);
+    scores.appendChild(row);
+  });
 
   const meHost = state.players[state.youIndex]?.isHost;
   $('btn-next-round').style.display = meHost ? '' : 'none';
-  $('btn-next-round').textContent = isMatchOver ? 'New Match' : 'Next Round';
 }
 
 /* The winning tile slams onto the table and knocks everything flying. */
