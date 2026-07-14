@@ -16,6 +16,8 @@ const HAND_SIZE = 7;
 const TARGET_SCORE = 200;
 const PASS_BONUS = 25; // everyone skips after your tile
 const CAPICUA_BONUS = 25; // winning tile fits both ends
+const TURN_MS = Number(process.env.TURN_MS) || 15000; // time to play before the CPU plays for you
+const AUTO_DELAY = Number(process.env.AUTO_DELAY_MS) || 900; // pause before automatic draws/passes so players can follow
 const ROOM_TTL_MS = 1000 * 60 * 60; // sweep rooms idle for an hour
 
 /** rooms: code -> room */
@@ -141,7 +143,142 @@ function startRound(room) {
     lastTilePlayer: null, // who placed the most recent tile (for the pass-around bonus)
     capicua: false,
     bonuses: [], // e.g. [{ playerIndex, type: 'pass'|'capicua', points }]
+    turnDeadline: null,
   };
+  beginTurn(room);
+}
+
+function clearTimers(room) {
+  if (room.turnTimer) clearTimeout(room.turnTimer);
+  if (room.autoTimer) clearTimeout(room.autoTimer);
+  room.turnTimer = room.autoTimer = null;
+}
+
+/**
+ * Called whenever a new player is on the move. Auto-draws when they have no
+ * playable tile, auto-passes when the boneyard is dry, and arms the 15s
+ * timer after which the CPU plays for them.
+ */
+function beginTurn(room) {
+  const g = room.game;
+  clearTimers(room);
+  if (!g || g.over || room.players.length === 0) return;
+  if (g.turn >= room.players.length) g.turn = 0;
+  const player = room.players[g.turn];
+
+  if (!handHasPlayable(player.hand, g)) {
+    g.turnDeadline = Date.now() + AUTO_DELAY;
+    g.turnTotal = AUTO_DELAY;
+    room.autoTimer = setTimeout(() => {
+      const cur = room.game;
+      if (!cur || cur.over || cur !== g) return;
+      if (g.boneyard.length > 0) {
+        player.hand.push(g.boneyard.pop());
+        g.lastMove = { playerIndex: g.turn, drew: true, auto: true };
+        broadcast(room);
+        beginTurn(room); // may need to draw again, or can play now
+      } else {
+        doPass(room, g.turn, true);
+      }
+    }, AUTO_DELAY);
+    return;
+  }
+
+  g.turnDeadline = Date.now() + TURN_MS;
+  g.turnTotal = TURN_MS;
+  room.turnTimer = setTimeout(() => {
+    const cur = room.game;
+    if (!cur || cur.over || cur !== g) return;
+    // CPU plays a random playable tile on a random valid side
+    const options = [];
+    player.hand.forEach((t, i) => {
+      for (const side of tilePlayableSides(t, g)) options.push({ i, side });
+    });
+    if (options.length === 0) return beginTurn(room); // shouldn't happen
+    const pick = options[Math.floor(Math.random() * options.length)];
+    io.to(room.code).emit('toast', `⏱ Time's up — playing for ${player.name}`);
+    doPlay(room, g.turn, pick.i, pick.side, true);
+  }, TURN_MS);
+}
+
+/** Place a tile. Assumes turn/ownership already validated. Returns {error} or {ok}. */
+function doPlay(room, playerIndex, tileIndex, side, auto = false) {
+  const g = room.game;
+  const player = room.players[playerIndex];
+  const tile = player.hand[tileIndex];
+  if (!tile) return { error: 'Invalid tile.' };
+  const sides = tilePlayableSides(tile, g);
+  if (!sides.includes(side)) {
+    if (sides.length === 0) return { error: "That tile doesn't match either end." };
+    side = sides[0];
+  }
+
+  // Capicúa: the round-winning tile fits BOTH open ends of the line.
+  if (player.hand.length === 1 && g.board.length > 0 && tile[0] !== tile[1]) {
+    const fitsLeft = tile[0] === g.leftEnd || tile[1] === g.leftEnd;
+    const fitsRight = tile[0] === g.rightEnd || tile[1] === g.rightEnd;
+    g.capicua = fitsLeft && fitsRight;
+  }
+
+  player.hand.splice(tileIndex, 1);
+
+  if (g.board.length === 0) {
+    g.board.push(tile);
+    g.leftEnd = tile[0];
+    g.rightEnd = tile[1];
+  } else if (side === 'left') {
+    const oriented = tile[1] === g.leftEnd ? tile : [tile[1], tile[0]];
+    g.board.unshift(oriented);
+    g.leftEnd = oriented[0];
+  } else {
+    const oriented = tile[0] === g.rightEnd ? tile : [tile[1], tile[0]];
+    g.board.push(oriented);
+    g.rightEnd = oriented[1];
+  }
+
+  g.passes = 0;
+  g.lastMove = { playerIndex, tile, side, auto };
+  g.lastTilePlayer = playerIndex;
+
+  if (player.hand.length === 0) {
+    endRound(room, playerIndex, false);
+  } else {
+    advanceTurn(room);
+  }
+  broadcast(room);
+  if (!g.over) beginTurn(room);
+  return { ok: true };
+}
+
+/** Pass the turn (only legal with no playable tile and an empty boneyard). */
+function doPass(room, playerIndex, auto = false) {
+  const g = room.game;
+  g.passes += 1;
+  g.lastMove = { playerIndex, pass: true, auto };
+  // Pass-around bonus: everyone else skipped after the last tile played.
+  if (g.passes === room.players.length - 1 && g.lastTilePlayer !== null) {
+    awardPoints(room, g.lastTilePlayer, PASS_BONUS);
+    g.bonuses.push({ playerIndex: g.lastTilePlayer, type: 'pass', points: PASS_BONUS });
+    io.to(room.code).emit('bonus', {
+      playerIndex: g.lastTilePlayer,
+      name: room.players[g.lastTilePlayer].name,
+      type: 'pass',
+      points: PASS_BONUS,
+    });
+    // If the bonus alone reaches the target, the match ends right here.
+    if (room.players[g.lastTilePlayer].score >= TARGET_SCORE) {
+      g.over = true;
+      g.roundWinner = g.lastTilePlayer;
+      g.matchWinner = g.lastTilePlayer;
+      g.roundPoints = PASS_BONUS;
+    }
+  }
+  if (!g.over) checkBlocked(room);
+  if (!g.over) advanceTurn(room);
+  broadcast(room);
+  if (g.over) clearTimers(room);
+  else beginTurn(room);
+  return { ok: true };
 }
 
 function advanceTurn(room) {
@@ -151,6 +288,7 @@ function advanceTurn(room) {
 
 function endRound(room, winnerIndex, blocked) {
   const g = room.game;
+  clearTimers(room);
   g.over = true;
   g.blocked = blocked;
   g.roundWinner = winnerIndex;
@@ -163,6 +301,12 @@ function endRound(room, winnerIndex, blocked) {
     if (g.capicua) {
       gained += CAPICUA_BONUS;
       g.bonuses.push({ playerIndex: winnerIndex, type: 'capicua', points: CAPICUA_BONUS });
+      io.to(room.code).emit('bonus', {
+        playerIndex: winnerIndex,
+        name: room.players[winnerIndex].name,
+        type: 'capicua',
+        points: CAPICUA_BONUS,
+      });
     }
     awardPoints(room, winnerIndex, gained);
     g.roundPoints = gained;
@@ -233,6 +377,8 @@ function stateFor(room, playerId) {
           matchWinner: g.matchWinner,
           capicua: g.capicua,
           bonuses: g.bonuses,
+          turnDeadline: g.turnDeadline,
+          turnTotal: g.turnTotal || TURN_MS,
           lastMove: g.lastMove,
           targetScore: TARGET_SCORE,
         }
@@ -315,97 +461,11 @@ io.on('connection', (socket) => {
   });
 
   socket.on('playTile', ({ tileIndex, side }, cb) => {
-    const { room, playerIndex, player } = getRoomAndPlayer(socket);
+    const { room, playerIndex } = getRoomAndPlayer(socket);
     const g = room?.game;
     if (!g || g.over) return cb?.({ error: 'No active game.' });
     if (g.turn !== playerIndex) return cb?.({ error: 'Not your turn.' });
-    const tile = player.hand[tileIndex];
-    if (!tile) return cb?.({ error: 'Invalid tile.' });
-    const sides = tilePlayableSides(tile, g);
-    if (!sides.includes(side)) {
-      if (sides.length === 0) return cb?.({ error: "That tile doesn't match either end." });
-      side = sides[0];
-    }
-
-    // Capicúa: the round-winning tile fits BOTH open ends of the line.
-    const isWinningTile = player.hand.length === 1;
-    if (isWinningTile && g.board.length > 0 && tile[0] !== tile[1]) {
-      const fitsLeft = tile[0] === g.leftEnd || tile[1] === g.leftEnd;
-      const fitsRight = tile[0] === g.rightEnd || tile[1] === g.rightEnd;
-      g.capicua = fitsLeft && fitsRight;
-    }
-
-    player.hand.splice(tileIndex, 1);
-
-    if (g.board.length === 0) {
-      g.board.push(tile);
-      g.leftEnd = tile[0];
-      g.rightEnd = tile[1];
-    } else if (side === 'left') {
-      const oriented = tile[1] === g.leftEnd ? tile : [tile[1], tile[0]];
-      g.board.unshift(oriented);
-      g.leftEnd = oriented[0];
-    } else {
-      const oriented = tile[0] === g.rightEnd ? tile : [tile[1], tile[0]];
-      g.board.push(oriented);
-      g.rightEnd = oriented[1];
-    }
-
-    g.passes = 0;
-    g.lastMove = { playerIndex, tile, side };
-    g.lastTilePlayer = playerIndex;
-
-    if (player.hand.length === 0) {
-      endRound(room, playerIndex, false);
-    } else {
-      advanceTurn(room);
-    }
-    cb?.({ ok: true });
-    broadcast(room);
-  });
-
-  socket.on('drawTile', (cb) => {
-    const { room, playerIndex, player } = getRoomAndPlayer(socket);
-    const g = room?.game;
-    if (!g || g.over) return cb?.({ error: 'No active game.' });
-    if (g.turn !== playerIndex) return cb?.({ error: 'Not your turn.' });
-    if (handHasPlayable(player.hand, g)) return cb?.({ error: 'You have a playable tile.' });
-    if (g.boneyard.length === 0) return cb?.({ error: 'Boneyard is empty — pass instead.' });
-    player.hand.push(g.boneyard.pop());
-    g.lastMove = { playerIndex, drew: true };
-    cb?.({ ok: true });
-    broadcast(room);
-  });
-
-  socket.on('pass', (cb) => {
-    const { room, playerIndex, player } = getRoomAndPlayer(socket);
-    const g = room?.game;
-    if (!g || g.over) return cb?.({ error: 'No active game.' });
-    if (g.turn !== playerIndex) return cb?.({ error: 'Not your turn.' });
-    if (handHasPlayable(player.hand, g)) return cb?.({ error: 'You have a playable tile.' });
-    if (g.boneyard.length > 0) return cb?.({ error: 'You must draw from the boneyard first.' });
-    g.passes += 1;
-    g.lastMove = { playerIndex, pass: true };
-    // Pass-around bonus: everyone else skipped after the last tile played.
-    if (g.passes === room.players.length - 1 && g.lastTilePlayer !== null) {
-      awardPoints(room, g.lastTilePlayer, PASS_BONUS);
-      g.bonuses.push({ playerIndex: g.lastTilePlayer, type: 'pass', points: PASS_BONUS });
-      io.to(room.code).emit(
-        'toast',
-        `+${PASS_BONUS} to ${room.players[g.lastTilePlayer].name} — everyone else passed!`
-      );
-      // If the bonus alone reaches the target, the match ends right here.
-      if (room.players[g.lastTilePlayer].score >= TARGET_SCORE) {
-        g.over = true;
-        g.roundWinner = g.lastTilePlayer;
-        g.matchWinner = g.lastTilePlayer;
-        g.roundPoints = PASS_BONUS;
-      }
-    }
-    if (!g.over) checkBlocked(room);
-    if (!g.over) advanceTurn(room);
-    cb?.({ ok: true });
-    broadcast(room);
+    cb?.(doPlay(room, playerIndex, tileIndex, side));
   });
 
   // Host can remove a disconnected seat so the game keeps moving.
@@ -423,10 +483,12 @@ io.on('connection', (socket) => {
       if (g.turn > playerIndex) g.turn -= 1;
       if (g.turn >= room.players.length) g.turn = 0;
       if (room.players.length === 1) endRound(room, 0, false);
+      else beginTurn(room);
     }
     io.to(room.code).emit('toast', `${target.name} was removed from the game`);
     cb?.({ ok: true });
     if (room.players.length === 0) {
+      clearTimers(room);
       rooms.delete(room.code);
       return;
     }
@@ -461,6 +523,8 @@ function handleLeave(socket, explicit) {
       if (room.players.length === 1) {
         endRound(room, 0, false);
         io.to(room.code).emit('toast', `${player.name} left — round goes to ${room.players[0].name}`);
+      } else {
+        beginTurn(room);
       }
     }
   } else {
@@ -470,6 +534,7 @@ function handleLeave(socket, explicit) {
   }
 
   if (room.players.length === 0) {
+    clearTimers(room);
     rooms.delete(room.code);
     return;
   }
@@ -487,7 +552,10 @@ function handleLeave(socket, explicit) {
 setInterval(() => {
   const now = Date.now();
   for (const [code, room] of rooms) {
-    if (now - room.lastActivity > ROOM_TTL_MS) rooms.delete(code);
+    if (now - room.lastActivity > ROOM_TTL_MS) {
+      clearTimers(room);
+      rooms.delete(code);
+    }
   }
 }, 1000 * 60 * 10);
 

@@ -7,7 +7,9 @@ const screens = { home: $('screen-home'), lobby: $('screen-lobby'), game: $('scr
 let state = null; // last server state
 let selectedTileIndex = null;
 let prevBoardLen = 0; // for detecting a newly placed tile to animate
-let pendingHandRect = null; // where my clicked tile was, so the animation starts there
+let pendingHandRect = null; // where my played tile started, so the animation begins there
+let wasOver = false; // detects the round-end transition for the smack finale
+let overlayHoldUntil = 0; // keep the scoreboard hidden while the finale plays
 
 function show(name) {
   Object.values(screens).forEach((s) => s.classList.remove('active'));
@@ -145,12 +147,9 @@ function leaveRoom() {
   socket.emit('leaveRoom');
   state = null;
   prevBoardLen = 0;
+  wasOver = false;
   show('home');
 }
-
-/* ---------- Game actions ---------- */
-$('btn-draw').onclick = () => socket.emit('drawTile', (res) => res?.error && toast(res.error));
-$('btn-pass').onclick = () => socket.emit('pass', (res) => res?.error && toast(res.error));
 
 $('btn-next-round').onclick = () => socket.emit('startGame', (res) => res?.error && toast(res.error));
 $('btn-back-home').onclick = leaveRoom;
@@ -190,6 +189,163 @@ function playableSides(tile) {
   return sides;
 }
 
+/* ---------- Drag & drop ---------- */
+function makeDropZones(sides) {
+  const zones = [];
+  const board = $('board');
+  const wrap = $('board-wrap').getBoundingClientRect();
+  const place = (side, x, y) => {
+    const z = document.createElement('div');
+    z.className = 'drop-zone';
+    z.textContent = '+';
+    document.body.appendChild(z);
+    const half = 48;
+    z.style.left = Math.max(8, Math.min(window.innerWidth - 104, x - half)) + 'px';
+    z.style.top = Math.max(8, Math.min(window.innerHeight - 104, y - half)) + 'px';
+    zones.push({ side, el: z, rect: z.getBoundingClientRect() });
+  };
+  if (board.children.length === 0) {
+    place('left', wrap.left + wrap.width / 2, wrap.top + wrap.height / 2);
+  } else {
+    if (sides.includes('left')) {
+      const r = board.children[0].getBoundingClientRect();
+      place('left', r.left - 60, r.top + r.height / 2);
+    }
+    if (sides.includes('right')) {
+      const r = board.children[board.children.length - 1].getBoundingClientRect();
+      place('right', r.right + 60, r.top + r.height / 2);
+    }
+  }
+  return zones;
+}
+
+function inRect(ev, rect, pad = 22) {
+  return (
+    ev.clientX >= rect.left - pad && ev.clientX <= rect.right + pad &&
+    ev.clientY >= rect.top - pad && ev.clientY <= rect.bottom + pad
+  );
+}
+
+function attachTileInteraction(el, tileIndex, tile, sides) {
+  el.onpointerdown = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const startX = e.clientX;
+    const startY = e.clientY;
+    let dragging = false;
+    let ghost = null;
+    let zones = [];
+
+    const cleanup = () => {
+      zones.forEach((z) => z.el.remove());
+      zones = [];
+      if (ghost) ghost.remove();
+      ghost = null;
+      el.classList.remove('drag-source');
+      document.removeEventListener('pointermove', onMove);
+      document.removeEventListener('pointerup', onUp);
+      document.removeEventListener('pointercancel', onUp);
+    };
+
+    const onMove = (ev) => {
+      if (!dragging && Math.hypot(ev.clientX - startX, ev.clientY - startY) > 8) {
+        dragging = true;
+        ghost = dominoEl(tile, 'v');
+        ghost.classList.add('drag-ghost');
+        ghost.style.width = el.offsetWidth + 'px';
+        ghost.style.height = el.offsetHeight + 'px';
+        document.body.appendChild(ghost);
+        el.classList.add('drag-source');
+        zones = makeDropZones(sides);
+      }
+      if (dragging) {
+        ghost.style.left = ev.clientX + 'px';
+        ghost.style.top = ev.clientY + 'px';
+        zones.forEach((z) => z.el.classList.toggle('hot', inRect(ev, z.rect)));
+      }
+    };
+
+    const onUp = (ev) => {
+      if (dragging) {
+        const hit = zones.find((z) => inRect(ev, z.rect));
+        const ghostRect = ghost.getBoundingClientRect();
+        cleanup();
+        if (hit) {
+          pendingHandRect = ghostRect;
+          playTile(tileIndex, hit.side);
+        } else {
+          render(); // snap back
+        }
+      } else {
+        cleanup();
+        tapPlay(el, tileIndex, sides);
+      }
+    };
+
+    document.addEventListener('pointermove', onMove);
+    document.addEventListener('pointerup', onUp);
+    document.addEventListener('pointercancel', onUp);
+  };
+}
+
+function tapPlay(el, tileIndex, sides) {
+  const rect = el.getBoundingClientRect();
+  if (sides.length === 1 || state.game.board.length === 0) {
+    pendingHandRect = rect;
+    playTile(tileIndex, sides[0]);
+  } else {
+    selectedTileIndex = tileIndex;
+    pendingHandRect = rect;
+    el.classList.add('selected');
+    sideChooser.classList.remove('hidden');
+    const cw = sideChooser.offsetWidth;
+    sideChooser.style.left = Math.max(8, Math.min(window.innerWidth - cw - 8, rect.left + rect.width / 2 - cw / 2)) + 'px';
+    sideChooser.style.top = rect.top - 60 + 'px';
+  }
+}
+
+/* ---------- Countdown bars ---------- */
+(function tickTimer() {
+  const g = state?.game;
+  if (g && !g.over && g.turnDeadline) {
+    const frac = Math.max(0, Math.min(1, (g.turnDeadline - Date.now()) / (g.turnTotal || 15000)));
+    const myTurn = g.turn === state.youIndex;
+    $('turn-bar').style.transform = `scaleX(${myTurn ? frac : 0})`;
+    document.querySelectorAll('.seat.turn .seat-timer').forEach((bar) => {
+      bar.style.transform = `scaleX(${frac})`;
+    });
+  }
+  requestAnimationFrame(tickTimer);
+})();
+
+/* ---------- Bonus banner ---------- */
+socket.on('bonus', (b) => {
+  const delay = b.type === 'capicua' ? 900 : 0; // let the smack land first
+  setTimeout(() => {
+    const banner = $('bonus-banner');
+    banner.querySelector('.bonus-points').textContent = `+${b.points}`;
+    let who = b.name;
+    if (state?.teams && state.players[b.playerIndex]) {
+      who = state.players
+        .filter((p) => p.team === state.players[b.playerIndex].team)
+        .map((p) => p.name)
+        .join(' & ');
+    }
+    banner.querySelector('.bonus-text').textContent =
+      b.type === 'capicua' ? `Capicúa! ${who}` : `${who} shut everyone out!`;
+    banner.classList.remove('hidden');
+    // restart CSS animations
+    banner.querySelectorAll('div').forEach((d) => {
+      d.style.animation = 'none';
+      void d.offsetWidth;
+      d.style.animation = '';
+    });
+    $('table')?.classList.add('shake');
+    setTimeout(() => $('table')?.classList.remove('shake'), 600);
+    setTimeout(() => banner.classList.add('hidden'), 2400);
+  }, delay);
+});
+
 /* ---------- State + rendering ---------- */
 socket.on('toast', toast);
 
@@ -222,6 +378,7 @@ function render() {
 
 function renderLobby() {
   show('lobby');
+  wasOver = false;
   $('lobby-code').textContent = state.code;
   const list = $('lobby-players');
   list.innerHTML = '';
@@ -295,6 +452,10 @@ function buildSeat(seatEl, player, playerIndex, g) {
   pts.querySelector('b').textContent = player.score;
   seatEl.appendChild(pts);
 
+  const timer = document.createElement('div');
+  timer.className = 'seat-timer';
+  seatEl.appendChild(timer);
+
   if (!player.connected && state.players[state.youIndex]?.isHost) {
     const kick = document.createElement('button');
     kick.className = 'kick';
@@ -339,12 +500,16 @@ function renderGame() {
     board.appendChild(dominoEl(tile, tile[0] === tile[1] ? 'v' : 'h'));
   });
 
-  // animate the newest tile flying in from whoever played it
-  if (g.board.length > prevBoardLen && g.lastMove?.tile && board.children.length > 0) {
-    const newest =
-      g.lastMove.side === 'left' && g.board.length > 1
-        ? board.children[0]
-        : board.children[board.children.length - 1];
+  // round just ended with a played tile -> smack finale; otherwise fly-in
+  const justEnded = g.over && !wasOver;
+  const smackFinale =
+    justEnded && !g.blocked && g.lastMove?.tile && g.roundWinner === g.lastMove.playerIndex;
+
+  if (smackFinale) {
+    overlayHoldUntil = Date.now() + 2300;
+    runSmackFinale(board, g, seatOfPlayer);
+  } else if (g.board.length > prevBoardLen && g.lastMove?.tile && board.children.length > 0) {
+    const newest = newestTileEl(board, g);
     let fromRect = null;
     if (g.lastMove.playerIndex === state.youIndex && pendingHandRect) {
       fromRect = pendingHandRect;
@@ -356,6 +521,7 @@ function renderGame() {
   }
   prevBoardLen = g.board.length;
   pendingHandRect = null;
+  wasOver = g.over;
 
   // --- my seat ---
   const mySeat = $('my-seat');
@@ -390,108 +556,147 @@ function renderGame() {
     if (canPlay) anyPlayable = true;
     el.classList.add(canPlay ? 'playable' : 'dead');
     if (i === selectedTileIndex) el.classList.add('selected');
-    if (canPlay) {
-      el.onclick = (ev) => {
-        ev.stopPropagation();
-        const rect = el.getBoundingClientRect();
-        if (sides.length === 1 || g.board.length === 0) {
-          pendingHandRect = rect;
-          playTile(i, sides[0]);
-        } else {
-          selectedTileIndex = i;
-          pendingHandRect = rect;
-          el.classList.add('selected');
-          sideChooser.classList.remove('hidden');
-          const cw = sideChooser.offsetWidth;
-          sideChooser.style.left = Math.max(8, Math.min(window.innerWidth - cw - 8, rect.left + rect.width / 2 - cw / 2)) + 'px';
-          sideChooser.style.top = rect.top - 60 + 'px';
-        }
-      };
-    }
+    if (canPlay) attachTileInteraction(el, i, tile, sides);
     hand.appendChild(el);
   });
 
-  // --- draw / pass prompts + turn label ---
-  $('btn-draw').classList.toggle('show', myTurn && !anyPlayable && g.boneyardCount > 0);
-  $('btn-pass').classList.toggle('show', myTurn && !anyPlayable && g.boneyardCount === 0);
-  $('turn-label').textContent = g.over
-    ? ''
-    : myTurn
-      ? anyPlayable ? 'Your turn — tap a tile to play it' : 'No playable tiles…'
-      : `Waiting for ${state.players[g.turn]?.name}…`;
-
-  // --- round-over overlay ---
-  const overlay = $('overlay');
-  if (g.over) {
-    overlay.classList.remove('hidden');
-    const isMatchOver = g.matchWinner !== null && g.matchWinner !== undefined;
-    const sideName = (i) => {
-      if (i === null || i === undefined) return null;
-      if (!state.teams) return state.players[i]?.name;
-      return state.players.filter((p) => p.team === state.players[i].team).map((p) => p.name).join(' & ');
-    };
-    const winnerIdx = isMatchOver ? g.matchWinner : g.roundWinner;
-    const iWon = winnerIdx !== null && (state.teams
-      ? state.players[winnerIdx]?.team === state.players[state.youIndex]?.team
-      : winnerIdx === state.youIndex);
-    $('overlay-title').textContent = isMatchOver
-      ? `🏆 ${sideName(g.matchWinner)} win${state.teams ? '' : 's'} the match!`
-      : g.roundWinner === null
-        ? 'Blocked — tie round!'
-        : iWon
-          ? '🎉 You won the round!'
-          : `${sideName(g.roundWinner)} won the round`;
-
-    const subParts = [];
-    if (g.blocked) subParts.push('The game was blocked — fewest remaining pips takes it.');
-    else if (g.roundWinner !== null) subParts.push(`All remaining pips collected: +${g.roundPoints} pts.`);
-    for (const b of g.bonuses || []) {
-      subParts.push(
-        b.type === 'capicua'
-          ? `Capicúa! The winning tile fit both ends: +${b.points}.`
-          : `${state.players[b.playerIndex]?.name} made everyone pass: +${b.points}.`
-      );
-    }
-    $('overlay-sub').textContent = subParts.join(' ');
-
-    const scores = $('overlay-scores');
-    scores.innerHTML = '';
-    let rows;
-    if (state.teams) {
-      rows = [0, 1].map((t) => {
-        const members = state.players.map((p, i) => ({ p, i })).filter(({ p }) => p.team === t);
-        return {
-          label: members.map(({ p }) => p.name).join(' & ') + (members.some(({ i }) => i === state.youIndex) ? ' (you)' : ''),
-          score: members[0].p.score,
-          winner: winnerIdx !== null && state.players[winnerIdx]?.team === t,
-        };
-      });
+  // --- turn label ---
+  let label = '';
+  if (!g.over) {
+    if (g.turn === state.youIndex) {
+      label = anyPlayable
+        ? 'Your turn — drag a tile onto the board'
+        : g.boneyardCount > 0 ? 'No play — drawing for you…' : 'No play — passing…';
     } else {
-      rows = state.players.map((p, i) => ({
-        label: p.name + (i === state.youIndex ? ' (you)' : ''),
-        score: p.score,
-        winner: i === winnerIdx,
-      }));
+      const cur = state.players[g.turn];
+      label = g.lastMove?.drew && g.lastMove.playerIndex === g.turn
+        ? `${cur?.name} is drawing…`
+        : `Waiting for ${cur?.name}…`;
     }
-    rows
-      .sort((a, b) => b.score - a.score)
-      .forEach((r) => {
-        const row = document.createElement('div');
-        row.className = 'row' + (r.winner ? ' winner' : '');
-        const left = document.createElement('span');
-        left.textContent = r.label;
-        const right = document.createElement('span');
-        right.textContent = `${r.score} pts`;
-        row.append(left, right);
-        scores.appendChild(row);
-      });
-
-    const meHost = state.players[state.youIndex]?.isHost;
-    $('btn-next-round').style.display = meHost ? '' : 'none';
-    $('btn-next-round').textContent = isMatchOver ? 'New Match' : 'Next Round';
-  } else {
-    overlay.classList.add('hidden');
   }
+  $('turn-label').textContent = label;
+
+  // --- round-over overlay (delayed while the finale plays) ---
+  if (g.over) {
+    const wait = overlayHoldUntil - Date.now();
+    if (wait > 0) {
+      $('overlay').classList.add('hidden');
+      setTimeout(() => state?.game?.over && renderOverlay(state.game), wait);
+    } else {
+      renderOverlay(g);
+    }
+  } else {
+    $('overlay').classList.add('hidden');
+  }
+}
+
+function newestTileEl(board, g) {
+  return g.lastMove.side === 'left' && g.board.length > 1
+    ? board.children[0]
+    : board.children[board.children.length - 1];
+}
+
+function renderOverlay(g) {
+  const overlay = $('overlay');
+  overlay.classList.remove('hidden');
+  const isMatchOver = g.matchWinner !== null && g.matchWinner !== undefined;
+  const sideName = (i) => {
+    if (i === null || i === undefined) return null;
+    if (!state.teams) return state.players[i]?.name;
+    return state.players.filter((p) => p.team === state.players[i].team).map((p) => p.name).join(' & ');
+  };
+  const winnerIdx = isMatchOver ? g.matchWinner : g.roundWinner;
+  const iWon = winnerIdx !== null && (state.teams
+    ? state.players[winnerIdx]?.team === state.players[state.youIndex]?.team
+    : winnerIdx === state.youIndex);
+  $('overlay-title').textContent = isMatchOver
+    ? `🏆 ${sideName(g.matchWinner)} win${state.teams ? '' : 's'} the match!`
+    : g.roundWinner === null
+      ? 'Blocked — tie round!'
+      : iWon
+        ? '🎉 You won the round!'
+        : `${sideName(g.roundWinner)} won the round`;
+
+  const subParts = [];
+  if (g.blocked) subParts.push('The game was blocked — fewest remaining pips takes it.');
+  else if (g.roundWinner !== null) subParts.push(`All remaining pips collected: +${g.roundPoints} pts.`);
+  for (const b of g.bonuses || []) {
+    subParts.push(
+      b.type === 'capicua'
+        ? `Capicúa! The winning tile fit both ends: +${b.points}.`
+        : `${state.players[b.playerIndex]?.name} made everyone pass: +${b.points}.`
+    );
+  }
+  $('overlay-sub').textContent = subParts.join(' ');
+
+  const scores = $('overlay-scores');
+  scores.innerHTML = '';
+  let rows;
+  if (state.teams) {
+    rows = [0, 1].map((t) => {
+      const members = state.players.map((p, i) => ({ p, i })).filter(({ p }) => p.team === t);
+      return {
+        label: members.map(({ p }) => p.name).join(' & ') + (members.some(({ i }) => i === state.youIndex) ? ' (you)' : ''),
+        score: members[0].p.score,
+        winner: winnerIdx !== null && state.players[winnerIdx]?.team === t,
+      };
+    });
+  } else {
+    rows = state.players.map((p, i) => ({
+      label: p.name + (i === state.youIndex ? ' (you)' : ''),
+      score: p.score,
+      winner: i === winnerIdx,
+    }));
+  }
+  rows
+    .sort((a, b) => b.score - a.score)
+    .forEach((r) => {
+      const row = document.createElement('div');
+      row.className = 'row' + (r.winner ? ' winner' : '');
+      const left = document.createElement('span');
+      left.textContent = r.label;
+      const right = document.createElement('span');
+      right.textContent = `${r.score} pts`;
+      row.append(left, right);
+      scores.appendChild(row);
+    });
+
+  const meHost = state.players[state.youIndex]?.isHost;
+  $('btn-next-round').style.display = meHost ? '' : 'none';
+  $('btn-next-round').textContent = isMatchOver ? 'New Match' : 'Next Round';
+}
+
+/* The winning tile slams onto the table and knocks everything flying. */
+function runSmackFinale(board, g) {
+  const newest = newestTileEl(board, g);
+  const newestRect = newest.getBoundingClientRect();
+  const cx = newestRect.left + newestRect.width / 2;
+  const cy = newestRect.top + newestRect.height / 2;
+
+  newest.classList.add('smack');
+  const table = $('table');
+  setTimeout(() => {
+    table.classList.add('shake');
+    setTimeout(() => table.classList.remove('shake'), 600);
+  }, 320);
+
+  // everything else scatters away from the impact point
+  const others = [...board.children].filter((el) => el !== newest);
+  setTimeout(() => {
+    others.forEach((el) => {
+      const r = el.getBoundingClientRect();
+      const ex = r.left + r.width / 2 - cx;
+      const ey = r.top + r.height / 2 - cy;
+      const dist = Math.max(40, Math.hypot(ex, ey));
+      const push = 260 + Math.random() * 420;
+      const dx = (ex / dist) * push + (Math.random() - 0.5) * 160;
+      const dy = (ey / dist) * push + (Math.random() - 0.5) * 160;
+      const rot = (Math.random() - 0.5) * 1080;
+      el.classList.add('scatter');
+      el.style.transform = `translate(${dx}px, ${dy}px) rotate(${rot}deg)`;
+      el.style.opacity = '0.25';
+    });
+  }, 360);
 }
 
 /* FLIP animation: the tile starts where it was played from and flies to its board slot. */
