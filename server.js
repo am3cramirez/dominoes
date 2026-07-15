@@ -17,9 +17,9 @@ const TARGET_SCORE = Number(process.env.TARGET_SCORE) || 200;
 const PASS_BONUS = 25; // everyone skips after your tile
 const CAPICUA_BONUS = 25; // winning tile fits both ends
 const TURN_MS = Number(process.env.TURN_MS) || 15000; // time to play before the CPU plays for you
-const AUTO_DELAY = Number(process.env.AUTO_DELAY_MS) || 900; // pause before automatic draws/passes so players can follow
+const AUTO_DELAY = Number(process.env.AUTO_DELAY_MS) || 1700; // pause (with a "Blocked" alert) before automatic draws/passes
 const LOBBY_COUNTDOWN_MS = Number(process.env.LOBBY_COUNTDOWN_MS) || 25000; // join window after host presses Start
-const BOT_MOVE_MS = Number(process.env.BOT_MOVE_MS) || 1300; // CPU-filled players "think" this long per turn
+const BOT_MOVE_MS = Number(process.env.BOT_MOVE_MS) || 1900; // CPU-filled players "think" this long per turn
 const ROUND_TALLY_MS = Number(process.env.ROUND_TALLY_MS) || 4200; // gap before the next round auto-deals (tally count-up + ~2s hold)
 const BLOCKED_REVEAL_MS = Number(process.env.BLOCKED_REVEAL_MS) || 7000; // longer hold to reveal hands on a locked game
 const OPENING_BLOCK_BONUS = 25; // round-opening tile shuts out the next opponent, but not their partner too
@@ -257,6 +257,14 @@ function beginTurn(room) {
   if (!handHasPlayable(player.hand, g)) {
     g.turnDeadline = Date.now() + autoDelay;
     g.turnTotal = autoDelay;
+    // Announce that this player has nothing to play (a floating alert above
+    // their seat) before we quietly draw or pass for them.
+    io.to(room.code).emit('noplay', {
+      playerIndex: g.turn,
+      name: player.name,
+      action: g.boneyard.length > 0 ? 'draw' : 'pass',
+      ms: autoDelay,
+    });
     room.autoTimer = setTimeout(() => {
       const cur = room.game;
       if (!cur || cur.over || cur !== g) return;

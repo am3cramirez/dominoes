@@ -603,6 +603,19 @@ socket.on('bonus', (b) => {
   }, delay);
 });
 
+/* A player has nothing to play — flash an alert above their seat before the
+   server draws or passes for them. */
+socket.on('noplay', (n) => {
+  const blocked = n.action === 'pass';
+  showSeatAlert(
+    n.playerIndex,
+    blocked ? 'Blocked' : 'Drawing…',
+    blocked ? 'blocked' : 'draw',
+    Math.max(900, (n.ms || 1500) - 150)
+  );
+  if (blocked) Sound.lose();
+});
+
 /* ---------- State + rendering ---------- */
 socket.on('toast', toast);
 
@@ -847,8 +860,8 @@ function renderGame() {
     justEnded && !g.blocked && g.lastMove?.tile && g.roundWinner === g.lastMove.playerIndex;
 
   if (smackFinale) {
-    overlayHoldUntil = Date.now() + 2300;
-    Sound.place();
+    // Hold the scoreboard until the slow slam + scatter has played out.
+    overlayHoldUntil = Date.now() + 3600;
     runSmackFinale(board, g, seatOfPlayer);
   } else if (g.board.length > prevBoardLen && g.lastMove?.tile && board.children.length > 0) {
     const newest = newestTileEl(board, g);
@@ -1063,6 +1076,30 @@ function runTally(g) {
   }, totalMs);
 }
 
+/* Find the seat DOM element for a player (my seat, or an opponent seat). */
+function seatAnchorFor(playerIndex) {
+  if (!state) return null;
+  if (playerIndex === state.youIndex) return $('my-seat');
+  return document.querySelector(`.seat[data-player-index="${playerIndex}"]`);
+}
+
+/* A short-lived pill floating above a player's seat (e.g. "Blocked"). */
+function showSeatAlert(playerIndex, text, kind, ms = 1400) {
+  const anchor = seatAnchorFor(playerIndex);
+  if (!anchor) return;
+  const r = anchor.getBoundingClientRect();
+  const el = document.createElement('div');
+  el.className = 'seat-alert' + (kind ? ' ' + kind : '');
+  el.textContent = text;
+  document.body.appendChild(el);
+  const tw = el.offsetWidth;
+  el.style.left = Math.max(8, Math.min(window.innerWidth - tw - 8, r.left + r.width / 2 - tw / 2)) + 'px';
+  const isTop = anchor.id === 'seat-top';
+  el.style.top = (isTop ? r.bottom + 10 : r.top - 46) + 'px';
+  setTimeout(() => el.classList.add('leaving'), Math.max(300, ms - 350));
+  setTimeout(() => el.remove(), ms);
+}
+
 function showStarterToast(starterIndex, anchor) {
   const name = state.players[starterIndex]?.name;
   if (!name || !anchor) return;
@@ -1125,29 +1162,30 @@ function runSmackFinale(board, g) {
 
   newest.classList.add('smack');
   const table = $('table');
+  // The CSS "smack" hovers big for suspense, then slams at ~0.9s. Sync the
+  // impact (sound + table shake + scatter) to that moment.
+  const SLAM = 900;
   setTimeout(() => {
+    Sound.place();
     table.classList.add('shake');
     setTimeout(() => table.classList.remove('shake'), 600);
-  }, 320);
-
-  // everything else scatters away from the impact point
-  const others = [...board.children].filter((el) => el !== newest);
-  setTimeout(() => {
     const k = boardMeta.scale || 1;
-    others.forEach((el) => {
-      const r = el.getBoundingClientRect();
-      const ex = r.left + r.width / 2 - cx;
-      const ey = r.top + r.height / 2 - cy;
-      const dist = Math.max(40, Math.hypot(ex, ey));
-      const push = (260 + Math.random() * 420) / k;
-      const dx = (ex / dist) * push + ((Math.random() - 0.5) * 160) / k;
-      const dy = (ey / dist) * push + ((Math.random() - 0.5) * 160) / k;
-      const rot = (Math.random() - 0.5) * 1080;
-      el.classList.add('scatter');
-      el.style.transform = `translate(${dx}px, ${dy}px) rotate(${rot}deg)`;
-      el.style.opacity = '0.25';
-    });
-  }, 360);
+    [...board.children]
+      .filter((el) => el !== newest)
+      .forEach((el) => {
+        const r = el.getBoundingClientRect();
+        const ex = r.left + r.width / 2 - cx;
+        const ey = r.top + r.height / 2 - cy;
+        const dist = Math.max(40, Math.hypot(ex, ey));
+        const push = (260 + Math.random() * 420) / k;
+        const dx = (ex / dist) * push + ((Math.random() - 0.5) * 160) / k;
+        const dy = (ey / dist) * push + ((Math.random() - 0.5) * 160) / k;
+        const rot = (Math.random() - 0.5) * 1080;
+        el.classList.add('scatter');
+        el.style.transform = `translate(${dx}px, ${dy}px) rotate(${rot}deg)`;
+        el.style.opacity = '0.25';
+      });
+  }, SLAM);
 }
 
 /* FLIP animation: the tile starts where it was played from and flies to its board slot. */
