@@ -275,83 +275,86 @@ function playableSides(tile) {
   return sides;
 }
 
-/* ---------- Board layout: anchored snake that zooms to fit ----------
-   The first tile stays at the origin; the right side of the chain grows
-   rightward and bends counterclockwise along the table edges (up the right
-   side), the left side grows leftward and bends down — like PlayDrift.
-   The whole board container is then scaled so everything always fits. */
+/* ---------- Board layout: centre-anchored perimeter spiral ----------
+   The opening tile stays in the middle; the chain grows from both ends and
+   snakes around a bounded rectangle (fill the width, then turn and run
+   vertically up to a height bound, then turn sideways again) — exactly like
+   PlayDrift. The whole board is then zoomed to fit, so it "spreads out" and
+   zooms away as it grows. Doubles sit perpendicular to the run (upright in a
+   horizontal row, flat across a vertical column). */
 const U = 40;      // short side of a tile in board units (bigger = larger pips)
 const LONG = U * 2;
 const GAP = 3;
-// Half-width the serpentine may reach before wrapping to the next row. Set
-// responsively each render (below) so the chain fills the play area's width
-// and only wraps to a new row when it truly runs out of room.
-let SNAKE_X = 520;
+// Half-bounds of the rectangle the chain snakes around, set responsively each
+// render. Minimums keep the geometry in its verified overlap-free range.
+let HALF_W = 520;
+let HALF_H = 380;
 
 let boardMeta = { scale: 1, ends: {}, origin: null }; // refreshed each render
 
-/* Boustrophedon serpentine: tiles are laid in horizontal rows that reverse
-   direction each time they hit the width bound, stacking downward. This stays
-   compact (never wider than 2*HALF_W) and never self-overlaps at any length —
-   unlike a spiral, which eventually eats its own tail. board[i][0] connects to
-   the previous tile, board[i][1] to the next, so pip order follows travel. */
 function layoutBoard(g) {
   const placements = [];
   if (!g.board.length) return { placements, ends: {} };
+  const anchorIdx = Math.min(g.anchorIndex ?? 0, g.board.length - 1);
 
-  // A double is drawn vertical (U wide, LONG tall): its extent along travel is
-  // U in a horizontal run and LONG in a vertical run. Normal tiles are LONG
-  // along travel, U across.
-  const dims = (tile, d) => {
-    const isD = tile[0] === tile[1];
-    const h = d.x !== 0;
-    return { along: isD ? (h ? U : LONG) : LONG };
-  };
-  const make = (tile, cx, cy, d) => {
+  const alongOf = (tile) => (tile[0] === tile[1] ? U : LONG); // doubles are short along travel
+  const make = (tile, near, far, cx, cy, d) => {
     const horiz = d.x !== 0;
-    if (tile[0] === tile[1]) return { x: cx, y: cy, w: U, h: LONG, orient: 'v', halves: [tile[0], tile[1]] };
-    const halves = horiz
-      ? (d.x > 0 ? [tile[0], tile[1]] : [tile[1], tile[0]])
-      : [tile[0], tile[1]]; // vertical runs go downward, near (tile[0]) on top
+    if (tile[0] === tile[1]) {
+      return horiz
+        ? { x: cx, y: cy, w: U, h: LONG, orient: 'v', halves: [tile[0], tile[1]] }
+        : { x: cx, y: cy, w: LONG, h: U, orient: 'h', halves: [tile[0], tile[1]] };
+    }
+    const halves = horiz ? (d.x > 0 ? [near, far] : [far, near]) : (d.y > 0 ? [near, far] : [far, near]);
     return { x: cx, y: cy, w: horiz ? LONG : U, h: horiz ? U : LONG, orient: horiz ? 'h' : 'v', halves };
   };
 
-  let px = 0, py = 0;           // open connection point
-  let d = { x: 1, y: 0 };       // travel direction
-  let rowSign = 1;              // horizontal direction of the current row
-
-  for (let i = 0; i < g.board.length; i++) {
-    const tile = g.board[i];
-    // Travelling horizontally and the next tile would cross the width bound?
-    if (d.x !== 0) {
-      const { along } = dims(tile, d);
-      if (Math.abs(px + d.x * (along + GAP)) > SNAKE_X) {
-        // Corner: step past the last horizontal tile so the vertical connector
-        // clears it, drop one row with this tile, then resume horizontally in
-        // the opposite direction, offset past the connector's column.
-        px += d.x * (U / 2 + GAP);
-        const dd = { x: 0, y: 1 };
-        const { along: da } = dims(tile, dd);
-        placements.push({ index: i, dir: dd, ...make(tile, px, py + da / 2, dd) });
-        py += da + GAP;
-        d = { x: -rowSign, y: 0 };
-        rowSign = -rowSign;
-        px += d.x * (U / 2 + GAP);
-        continue;
+  // Walk one arm outward from the anchor, bending 90° whenever the next tile
+  // would leave the rectangle. `rot` sets the spiral direction for this arm.
+  const arm = (indices, nearOf, farOf, startX, dir, rot) => {
+    let px = startX, py = 0, d = { ...dir };
+    const out = [];
+    for (const i of indices) {
+      const tile = g.board[i];
+      let along = alongOf(tile);
+      const overX = d.x !== 0 && Math.abs(px + d.x * (along + GAP)) > HALF_W;
+      const overY = d.y !== 0 && Math.abs(py + d.y * (along + GAP)) > HALF_H;
+      if (overX || overY) {
+        const cross = tile[0] === tile[1] ? LONG : U; // width across the turn
+        px += d.x * (cross / 2 + GAP);
+        py += d.y * (cross / 2 + GAP);
+        d = rot(d);
+        along = alongOf(tile);
       }
+      out.push({ index: i, dir: d, ...make(tile, nearOf(tile), farOf(tile), px + d.x * (along / 2), py + d.y * (along / 2), d) });
+      px += d.x * (along + GAP);
+      py += d.y * (along + GAP);
     }
-    const { along } = dims(tile, d);
-    placements.push({ index: i, dir: d, ...make(tile, px + d.x * (along / 2), py + d.y * (along / 2), d) });
-    px += d.x * (along + GAP);
-    py += d.y * (along + GAP);
-  }
-
-  // Open ends for drag drop-zones (click-preview relayouts exactly instead).
-  const ends = {
-    left: { x: 0, y: 0, dir: { x: -1, y: 0 } }, // before index 0
-    right: { x: px, y: py, dir: d },            // after the last tile
+    return { out, end: { x: px, y: py, dir: d } };
   };
-  return { placements, ends };
+
+  const at = g.board[anchorIdx];
+  const anchorD = at[0] === at[1];
+  placements.push({
+    index: anchorIdx, dir: { x: 1, y: 0 }, x: 0, y: 0,
+    w: anchorD ? U : LONG, h: anchorD ? LONG : U, orient: anchorD ? 'v' : 'h',
+    halves: [at[0], at[1]],
+  });
+  const aHalf = (anchorD ? U : LONG) / 2 + GAP;
+
+  const rightIdx = [], leftIdx = [];
+  for (let i = anchorIdx + 1; i < g.board.length; i++) rightIdx.push(i);
+  for (let i = anchorIdx - 1; i >= 0; i--) leftIdx.push(i);
+
+  // Both ends turn the same way (rot 90° CW in screen space): the right end
+  // runs right then curls UP; the left end runs left then curls DOWN — a
+  // balanced rectangle around the centre, like the reference.
+  const rot = (d) => ({ x: d.y, y: -d.x });
+  const right = arm(rightIdx, (t) => t[0], (t) => t[1], aHalf, { x: 1, y: 0 }, rot);
+  const left = arm(leftIdx, (t) => t[1], (t) => t[0], -aHalf, { x: -1, y: 0 }, rot);
+  placements.push(...right.out, ...left.out);
+  placements.sort((a, b) => a.index - b.index);
+  return { placements, ends: { left: left.end, right: right.end } };
 }
 
 function boardToScreen(bx, by) {
@@ -801,7 +804,10 @@ function renderGame() {
   // Let each row use (almost) the full play-area width before wrapping, so the
   // chain spans the board instead of huddling in the middle.
   const wrapRect = $('board-wrap').getBoundingClientRect();
-  SNAKE_X = Math.max(320, wrapRect.width / 2 - 80);
+  // Size the spiral's rectangle to the play area (mins keep it in the verified
+  // overlap-free range); the chain fills the width, then curls within it.
+  HALF_W = Math.max(460, wrapRect.width / 2 - 60);
+  HALF_H = Math.max(360, wrapRect.height / 2 - 60);
   const { placements, ends } = layoutBoard(g);
   let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
   for (const pl of placements) {
