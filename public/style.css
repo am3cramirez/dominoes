@@ -118,6 +118,22 @@ input[type="text"]:focus { border-color: var(--accent); }
   -webkit-user-select: none;
 }
 
+/* Emblem in the middle of the table — a circle whose edges fade into the felt */
+#table-emblem {
+  position: absolute; top: 50%; left: 50%;
+  width: 340px; height: 340px;
+  transform: translate(-50%, -50%);
+  object-fit: cover; border-radius: 50%;
+  opacity: .16;
+  filter: grayscale(.5) contrast(.9);
+  mix-blend-mode: luminosity;
+  pointer-events: none; z-index: 0;
+  /* feather the circular edge so it melts into the table */
+  -webkit-mask-image: radial-gradient(circle, #000 42%, transparent 71%);
+  mask-image: radial-gradient(circle, #000 42%, transparent 71%);
+}
+@media (max-width: 700px) { #table-emblem { width: 220px; height: 220px; } }
+
 .back-btn {
   position: absolute; top: 18px; left: 18px; z-index: 20;
   width: 46px; height: 46px; border: none; border-radius: 12px;
@@ -192,12 +208,12 @@ input[type="text"]:focus { border-color: var(--accent); }
 .seat-v .back-tile:not(:first-child) { margin-top: -16px; }
 
 /* revealed hand at a locked game — tiles flip face-up */
-.reveal-hand { display: flex; flex-wrap: wrap; gap: 3px; max-width: 130px; justify-content: center; }
+.reveal-hand { display: flex; flex-wrap: wrap; gap: 4px; max-width: 168px; justify-content: center; }
 .reveal-tile {
-  width: 40px !important; height: 20px !important;
+  width: 56px !important; height: 28px !important;
   transform-origin: center; animation: flip-up .4s ease both;
 }
-.reveal-tile .pip { width: 4.5px; height: 4.5px; }
+.reveal-tile .pip { width: 6.5px; height: 6.5px; }
 .reveal-empty { color: #cfe6d8; font-size: .72rem; font-style: italic; opacity: .8; }
 @keyframes flip-up {
   0% { transform: rotateY(90deg); opacity: 0; }

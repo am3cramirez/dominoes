@@ -283,98 +283,75 @@ function playableSides(tile) {
 const U = 40;      // short side of a tile in board units (bigger = larger pips)
 const LONG = U * 2;
 const GAP = 3;
-const SNAKE_X = 380; // where the line bends
-const SNAKE_Y = 250;
+// Half-width the serpentine may reach before wrapping to the next row. Kept
+// small so the board stays a compact block in the middle of the table with
+// open felt on either side (PlayDrift-style) instead of spanning the width.
+const SNAKE_X = 260;
 
 let boardMeta = { scale: 1, ends: {}, origin: null }; // refreshed each render
 
+/* Boustrophedon serpentine: tiles are laid in horizontal rows that reverse
+   direction each time they hit the width bound, stacking downward. This stays
+   compact (never wider than 2*HALF_W) and never self-overlaps at any length —
+   unlike a spiral, which eventually eats its own tail. board[i][0] connects to
+   the previous tile, board[i][1] to the next, so pip order follows travel. */
 function layoutBoard(g) {
   const placements = [];
   if (!g.board.length) return { placements, ends: {} };
-  const anchorIdx = Math.min(g.anchorIndex ?? 0, g.board.length - 1);
-  const rot = (d) => ({ x: d.y, y: -d.x }); // right end turns up, left end turns down
 
-  // Normal tiles lie inline with travel; doubles are ALWAYS drawn vertical
-  // (halves stacked), so they stand perpendicular across a horizontal run and
-  // inline along a vertical run.
-  const mk = (tile, near, far, cx, cy, d) => {
+  // A double is drawn vertical (U wide, LONG tall): its extent along travel is
+  // U in a horizontal run and LONG in a vertical run. Normal tiles are LONG
+  // along travel, U across.
+  const dims = (tile, d) => {
+    const isD = tile[0] === tile[1];
+    const h = d.x !== 0;
+    return { along: isD ? (h ? U : LONG) : LONG };
+  };
+  const make = (tile, cx, cy, d) => {
     const horiz = d.x !== 0;
-    if (tile[0] === tile[1]) {
-      return { x: cx, y: cy, w: U, h: LONG, orient: 'v', halves: [tile[0], tile[1]] };
-    }
-    const w = horiz ? LONG : U;
-    const h = horiz ? U : LONG;
+    if (tile[0] === tile[1]) return { x: cx, y: cy, w: U, h: LONG, orient: 'v', halves: [tile[0], tile[1]] };
     const halves = horiz
-      ? (d.x > 0 ? [near, far] : [far, near])
-      : (d.y > 0 ? [near, far] : [far, near]);
-    return { x: cx, y: cy, w, h, orient: horiz ? 'h' : 'v', halves };
+      ? (d.x > 0 ? [tile[0], tile[1]] : [tile[1], tile[0]])
+      : [tile[0], tile[1]]; // vertical runs go downward, near (tile[0]) on top
+    return { x: cx, y: cy, w: horiz ? LONG : U, h: horiz ? U : LONG, orient: horiz ? 'h' : 'v', halves };
   };
 
-  // `p` is the open connection point at the current end of this arm; tiles are
-  // laid centre-first along `d`. At a bend we simply rotate `d` and keep laying
-  // from the same point, so the turning tile meets the row's end at a clean
-  // right-angle (an L touching at the corner) instead of being nudged sideways.
-  const walk = (indices, nearOf, farOf, start, dir) => {
-    let px = start, py = 0, d = dir;
-    let turns = 0;
-    const out = [];
-    // A double is drawn vertical (U wide, LONG tall): its extent along travel
-    // is U in a horizontal run and LONG in a vertical run. Normal tiles are
-    // always LONG along travel, U across.
-    const dims = (tile, dir) => {
-      const isD = tile[0] === tile[1];
-      const h = dir.x !== 0;
-      return { along: isD ? (h ? U : LONG) : LONG, cross: isD ? (h ? LONG : U) : U };
-    };
-    for (const i of indices) {
-      const tile = g.board[i];
-      let { along, cross } = dims(tile, d);
-      let step = along + GAP;
-      // Spiral inward a little each full pair of turns so long chains keep
-      // fitting; only the axis of travel gates the bend.
-      const bx = SNAKE_X - Math.floor(turns / 2) * (LONG + GAP);
-      const by = SNAKE_Y - Math.floor(turns / 2) * (LONG + GAP);
-      if ((d.x !== 0 && Math.abs(px + d.x * step) > bx) ||
-          (d.y !== 0 && Math.abs(py + d.y * step) > by)) {
-        // Bend: step past the previous tile's end so the corner tile clears it,
-        // rotate 90°, then re-measure the tile for its new direction.
-        px += d.x * (cross / 2 + GAP);
-        py += d.y * (cross / 2 + GAP);
-        d = rot(d);
-        turns++;
-        ({ along, cross } = dims(tile, d));
-        step = along + GAP;
+  let px = 0, py = 0;           // open connection point
+  let d = { x: 1, y: 0 };       // travel direction
+  let rowSign = 1;              // horizontal direction of the current row
+
+  for (let i = 0; i < g.board.length; i++) {
+    const tile = g.board[i];
+    // Travelling horizontally and the next tile would cross the width bound?
+    if (d.x !== 0) {
+      const { along } = dims(tile, d);
+      if (Math.abs(px + d.x * (along + GAP)) > SNAKE_X) {
+        // Corner: step past the last horizontal tile so the vertical connector
+        // clears it, drop one row with this tile, then resume horizontally in
+        // the opposite direction, offset past the connector's column.
+        px += d.x * (U / 2 + GAP);
+        const dd = { x: 0, y: 1 };
+        const { along: da } = dims(tile, dd);
+        placements.push({ index: i, dir: dd, ...make(tile, px, py + da / 2, dd) });
+        py += da + GAP;
+        d = { x: -rowSign, y: 0 };
+        rowSign = -rowSign;
+        px += d.x * (U / 2 + GAP);
+        continue;
       }
-      const cx = px + d.x * (along / 2);
-      const cy = py + d.y * (along / 2);
-      out.push({ index: i, dir: d, ...mk(tile, nearOf(tile), farOf(tile), cx, cy, d) });
-      px += d.x * step;
-      py += d.y * step;
     }
-    return { out, end: { x: px, y: py, dir: d } };
+    const { along } = dims(tile, d);
+    placements.push({ index: i, dir: d, ...make(tile, px + d.x * (along / 2), py + d.y * (along / 2), d) });
+    px += d.x * (along + GAP);
+    py += d.y * (along + GAP);
+  }
+
+  // Open ends for drag drop-zones (click-preview relayouts exactly instead).
+  const ends = {
+    left: { x: 0, y: 0, dir: { x: -1, y: 0 } }, // before index 0
+    right: { x: px, y: py, dir: d },            // after the last tile
   };
-
-  const at = g.board[anchorIdx];
-  const anchorD = at[0] === at[1]; // a double opener stands vertical
-  placements.push({
-    index: anchorIdx, dir: { x: 1, y: 0 },
-    x: 0, y: 0,
-    w: anchorD ? U : LONG, h: anchorD ? LONG : U,
-    orient: anchorD ? 'v' : 'h',
-    halves: [at[0], at[1]],
-  });
-  const aHalf = (anchorD ? U : LONG) / 2 + GAP;
-
-  const rightIdx = [];
-  for (let i = anchorIdx + 1; i < g.board.length; i++) rightIdx.push(i);
-  const leftIdx = [];
-  for (let i = anchorIdx - 1; i >= 0; i--) leftIdx.push(i);
-
-  const right = walk(rightIdx, (t) => t[0], (t) => t[1], aHalf, { x: 1, y: 0 });
-  const left = walk(leftIdx, (t) => t[1], (t) => t[0], -aHalf, { x: -1, y: 0 });
-  placements.push(...right.out, ...left.out);
-  placements.sort((a, b) => a.index - b.index);
-  return { placements, ends: { left: left.end, right: right.end } };
+  return { placements, ends };
 }
 
 function boardToScreen(bx, by) {
