@@ -283,10 +283,10 @@ function playableSides(tile) {
 const U = 40;      // short side of a tile in board units (bigger = larger pips)
 const LONG = U * 2;
 const GAP = 3;
-// Half-width the serpentine may reach before wrapping to the next row. Kept
-// small so the board stays a compact block in the middle of the table with
-// open felt on either side (PlayDrift-style) instead of spanning the width.
-const SNAKE_X = 260;
+// Half-width the serpentine may reach before wrapping to the next row. Set
+// responsively each render (below) so the chain fills the play area's width
+// and only wraps to a new row when it truly runs out of room.
+let SNAKE_X = 520;
 
 let boardMeta = { scale: 1, ends: {}, origin: null }; // refreshed each render
 
@@ -798,6 +798,10 @@ function renderGame() {
   // --- board: snake layout, then zoom so everything fits ---
   const board = $('board');
   board.innerHTML = '';
+  // Let each row use (almost) the full play-area width before wrapping, so the
+  // chain spans the board instead of huddling in the middle.
+  const wrapRect = $('board-wrap').getBoundingClientRect();
+  SNAKE_X = Math.max(320, wrapRect.width / 2 - 80);
   const { placements, ends } = layoutBoard(g);
   let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
   for (const pl of placements) {
@@ -813,7 +817,7 @@ function renderGame() {
   }
   let scale = 1;
   if (placements.length) {
-    const wrap = $('board-wrap').getBoundingClientRect();
+    const wrap = wrapRect;
     const pad = 60; // breathing room for drop zones
     const bw = maxX - minX + pad * 2;
     const bh = maxY - minY + pad * 2;

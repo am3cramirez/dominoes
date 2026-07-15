@@ -242,8 +242,10 @@ input[type="text"]:focus { border-color: var(--accent); }
 .kick:hover { background: rgba(200,40,40,.8); }
 
 /* ---- Board ---- */
+/* Even margins around the whole play area; the sides clear the seat panels.
+   The serpentine width tracks this area (see client.js) so tiles span it. */
 #board-wrap {
-  position: absolute; inset: 84px 72px 156px;
+  position: absolute; inset: 92px 120px 150px;
   overflow: visible;
 }
 #board {
